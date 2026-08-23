@@ -4,7 +4,10 @@ import {
   CursorSessionManager,
   type CursorSession,
 } from "../../open-sse/services/cursorSessionManager";
-import { flattenMessages } from "../../open-sse/utils/cursorAgentProtobuf";
+import {
+  flattenMessages,
+  deriveCursorConversationKey,
+} from "../../open-sse/utils/cursorAgentProtobuf";
 
 // ─── Test doubles for h2 ───────────────────────────────────────────────────
 //
@@ -373,4 +376,86 @@ test("CursorSessionManager.open replaces an existing session for the same conver
   assert.equal(m.size(), 1);
   assert.equal(m.acquire("conv-8"), undefined); // session2 is "running"
   void session2;
+});
+
+// ─── deriveCursorConversationKey: session-reuse key stability ──────────────
+//
+// The bug these cover: conversationId fell back to crypto.randomUUID() when a
+// client sent no conversation_id, so acquire() could never match and every
+// tool follow-up paid a full cold-resume (re-flattening ~200k tokens of
+// history at ~15.9s per 100k input tokens).
+
+const SYSTEM_PROMPT = "You are a helpful assistant with tools.";
+
+test("deriveCursorConversationKey is stable across a tool follow-up turn", () => {
+  const first = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: "list the files" },
+  ];
+  // The same thread one turn later: assistant tool_call + tool result appended.
+  const followUp = [
+    ...first,
+    {
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "ls", arguments: "{}" } }],
+    },
+    { role: "tool" as const, tool_call_id: "call_1", content: "a.ts\nb.ts" },
+  ];
+
+  const k1 = deriveCursorConversationKey(first);
+  const k2 = deriveCursorConversationKey(followUp);
+  assert.ok(k1);
+  // Stability across the follow-up is the entire point: an unstable key here
+  // is exactly the cold-resume regression.
+  assert.equal(k2, k1);
+});
+
+test("deriveCursorConversationKey separates distinct conversations", () => {
+  const a = deriveCursorConversationKey([
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: "question one" },
+  ]);
+  const b = deriveCursorConversationKey([
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: "a completely different question" },
+  ]);
+  assert.ok(a && b);
+  assert.notEqual(a, b);
+});
+
+test("deriveCursorConversationKey handles multimodal content parts", () => {
+  const key = deriveCursorConversationKey([
+    { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT }] },
+    {
+      role: "user",
+      content: [{ type: "text", text: "describe this" }, { type: "image_url" }],
+    },
+  ]);
+  assert.ok(key);
+  assert.match(key, /^[0-9a-f]{32}$/);
+});
+
+test("deriveCursorConversationKey returns null without a usable prefix", () => {
+  // No system text and no user message — caller must fall back to a random id
+  // rather than colliding every keyless request onto one shared session.
+  assert.equal(deriveCursorConversationKey([]), null);
+  assert.equal(
+    deriveCursorConversationKey([{ role: "tool", tool_call_id: "x", content: "orphan result" }]),
+    null
+  );
+});
+
+test("deriveCursorConversationKey keys off the prefix, not later user turns", () => {
+  const base = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: "first question" },
+  ];
+  const later = [
+    ...base,
+    { role: "assistant" as const, content: "an answer" },
+    { role: "user" as const, content: "second question" },
+  ];
+  // Same thread, so the key must not move when the user speaks again.
+  assert.equal(deriveCursorConversationKey(later), deriveCursorConversationKey(base));
 });
