@@ -1436,6 +1436,59 @@ export type ChatMessage = {
 };
 
 /**
+ * Derive a stable conversation key from the immutable prefix of a thread.
+ *
+ * Why this exists: session reuse in the cursor executor is keyed by
+ * conversation id. OpenAI-compatible clients are not required to send
+ * `conversation_id` (Hermes, among others, never does), and the previous
+ * fallback minted a fresh `crypto.randomUUID()` per call. A random key can
+ * never match a stored session, so `CursorSessionManager.acquire()` missed
+ * on every tool follow-up and each one fell back to cold-resume — reopening
+ * an h2 stream and re-flattening the ENTIRE history into UserText. Measured
+ * against a real thread that is ~200k input tokens of re-sent prefix per
+ * turn, at roughly 15.9s per 100k tokens of input.
+ *
+ * The key hashes the leading system + first user message, which do not change
+ * for the life of a thread, so every turn of the same conversation derives the
+ * same value while distinct conversations stay separate. Tool results and
+ * later turns are deliberately excluded: they grow per turn and would defeat
+ * the whole point by producing a new key each call.
+ *
+ * Returns null when there is no usable prefix (no system text and no first
+ * user message) — the caller then falls back to a random id, preserving the
+ * old behavior rather than colliding every keyless request onto one session.
+ */
+export function deriveCursorConversationKey(messages: ChatMessage[]): string | null {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+
+  const partsToText = (content: ChatMessage["content"]): string => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((p) => (typeof p?.text === "string" ? p.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  };
+
+  const systemText = messages
+    .filter((m) => m.role === "system")
+    .map((m) => partsToText(m.content))
+    .filter(Boolean)
+    .join("\n\n");
+
+  const firstUser = messages.find((m) => m.role === "user");
+  const firstUserText = firstUser ? partsToText(firstUser.content) : "";
+
+  if (!systemText && !firstUserText) return null;
+
+  return crypto
+    .createHash("sha256")
+    .update(`${systemText}\u0000${firstUserText}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+/**
  * Flatten an OpenAI-shaped message list down to a single user-text string
  * suitable for cursor's UserMessage. The agent endpoint expects ONE user
  * message per Run; we concatenate prior conversation as context.
