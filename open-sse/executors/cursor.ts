@@ -31,6 +31,7 @@ import {
   encodeExecFetchError,
   encodeExecWriteShellStdinError,
   encodeExecDiagnosticsResult,
+  deriveCursorConversationKey,
   flattenMessages,
   openAIToolsToMcpDefs,
   type ChatMessage,
@@ -1289,10 +1290,12 @@ export class CursorExecutor extends BaseExecutor {
     mergeUpstreamExtraHeaders(headers, upstreamExtraHeaders);
 
     const messages: ChatMessage[] = body.messages || [];
+    // Prefer a client-supplied id; otherwise derive a stable key so tool
+    // follow-ups can reacquire the open h2 session instead of cold-resuming.
     const conversationId: string =
-      typeof body.conversation_id === "string" && body.conversation_id
-        ? body.conversation_id
-        : crypto.randomUUID();
+      (typeof body.conversation_id === "string" && body.conversation_id) ||
+      deriveCursorConversationKey(messages) ||
+      crypto.randomUUID();
     const lastMessage = messages[messages.length - 1];
     const isToolFollowUp = lastMessage?.role === "tool";
 
