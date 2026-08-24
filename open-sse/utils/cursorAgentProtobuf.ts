@@ -1468,6 +1468,40 @@ function partsToText(content: ChatMessage["content"]): string {
  * user message) — the caller then falls back to a random id, preserving the
  * old behavior rather than colliding every keyless request onto one session.
  */
+/**
+ * Inverse of the translator's `escapeXml` (`&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`).
+ * `&amp;` is decoded last so an escaped `&amp;lt;` survives as the literal `&lt;`.
+ */
+function unescapeXml(text: string): string {
+  return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+/**
+ * The openai→cursor translator represents tool outputs as `<tool_result>` text
+ * blocks inside user messages (protobuf tool_results made cursor loop — see the
+ * header of translator/request/openai-to-cursor.ts). That conversion runs before
+ * the executor, so by the time a request arrives the original `role:"tool"`
+ * message is no longer last and a naive `lastMessage.role === "tool"` check can
+ * never fire.
+ *
+ * Parse the converted form back out so the executor can still recognise a tool
+ * follow-up and reuse the open h2 session. Returns the tool_call_id/result pairs
+ * carried by a converted user message, or an empty array when this is not one.
+ */
+export function parseConvertedToolResults(
+  content: unknown
+): Array<{ toolCallId: string; result: string }> {
+  if (typeof content !== "string" || !content.includes("<tool_result>")) return [];
+  const out: Array<{ toolCallId: string; result: string }> = [];
+  const blocks = content.matchAll(/<tool_result>([\s\S]*?)<\/tool_result>/g);
+  for (const [, block] of blocks) {
+    const toolCallId = block.match(/<tool_call_id>([\s\S]*?)<\/tool_call_id>/)?.[1] ?? "";
+    const result = block.match(/<result>([\s\S]*?)<\/result>/)?.[1] ?? "";
+    if (toolCallId) out.push({ toolCallId: unescapeXml(toolCallId), result: unescapeXml(result) });
+  }
+  return out;
+}
+
 export function deriveCursorConversationKey(messages: ChatMessage[]): string | null {
   if (!Array.isArray(messages) || messages.length === 0) return null;
 

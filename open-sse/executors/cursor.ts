@@ -31,6 +31,7 @@ import {
   encodeExecWriteShellStdinError,
   encodeExecDiagnosticsResult,
   deriveCursorConversationKey,
+  parseConvertedToolResults,
   flattenMessages,
   openAIToolsToMcpDefs,
   type ChatMessage,
@@ -1186,7 +1187,25 @@ export class CursorExecutor extends BaseExecutor {
       deriveCursorConversationKey(messages) ||
       crypto.randomUUID();
     const lastMessage = messages[messages.length - 1];
-    const isToolFollowUp = lastMessage?.role === "tool";
+    // A tool follow-up reaches us in one of two shapes: the raw OpenAI
+    // `role:"tool"` message, or — far more often — the openai→cursor translator's
+    // converted form, a user message carrying `<tool_result>` blocks. Recognise
+    // both, otherwise inline resume is unreachable on the path we actually use.
+    //
+    // GATED OFF BY DEFAULT. Measured 2026-08-24 against live cursor-grok-4.6-high:
+    // detection works (toolFollowUp=true, acquire() returns a session for the
+    // first time), but the resumed h2 stream then yields NO bytes and the request
+    // hangs until the client aborts — 179992ms / request_signal_aborted. That is
+    // the wedge documented in the header of translator/request/openai-to-cursor.ts:
+    // cursor loops or stalls when tool outputs arrive as protobuf ExecMcpResult
+    // with partial schema mismatches. Cold resume is slower but it answers.
+    // Set OMNIROUTE_CURSOR_INLINE_RESUME=1 to experiment with the resume path.
+    const inlineResumeEnabled = process.env.OMNIROUTE_CURSOR_INLINE_RESUME === "1";
+    const convertedToolResults = inlineResumeEnabled
+      ? parseConvertedToolResults(lastMessage?.content)
+      : [];
+    const isToolFollowUp =
+      inlineResumeEnabled && (lastMessage?.role === "tool" || convertedToolResults.length > 0);
 
     // Tools embedded in the RequestContext ack throughout the turn —
     // synced with mcp_tools in the encoded request body.
@@ -1262,12 +1281,20 @@ export class CursorExecutor extends BaseExecutor {
       blobStore = session.blobStore;
       let matched = 0;
       let hadFailure = false;
+      // Same two shapes as isToolFollowUp: raw `role:"tool"` messages, plus the
+      // translator's converted `<tool_result>` blocks on the final user message.
+      const pending: Array<{ toolCallId: string; result: string }> = [];
       for (const msg of messages) {
         if (msg.role !== "tool") continue;
-        const id = msg.tool_call_id ?? "";
-        if (!session.pendingToolCalls.has(id)) continue;
-        const content = typeof msg.content === "string" ? msg.content : "";
-        if (cursorSessionManager.sendToolResult(session, id, content, false)) {
+        pending.push({
+          toolCallId: msg.tool_call_id ?? "",
+          result: typeof msg.content === "string" ? msg.content : "",
+        });
+      }
+      pending.push(...convertedToolResults);
+      for (const { toolCallId, result } of pending) {
+        if (!session.pendingToolCalls.has(toolCallId)) continue;
+        if (cursorSessionManager.sendToolResult(session, toolCallId, result, false)) {
           matched++;
         } else {
           hadFailure = true;
