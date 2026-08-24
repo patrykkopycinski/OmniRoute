@@ -1477,6 +1477,16 @@ export type ChatMessage = {
   tool_call_id?: string;
 };
 
+/** Collapse OpenAI message content (string or multimodal parts) to plain text. */
+function partsToText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((p) => (typeof p?.text === "string" ? p.text : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
 /**
  * Derive a stable conversation key from the immutable prefix of a thread.
  *
@@ -1502,15 +1512,6 @@ export type ChatMessage = {
  */
 export function deriveCursorConversationKey(messages: ChatMessage[]): string | null {
   if (!Array.isArray(messages) || messages.length === 0) return null;
-
-  const partsToText = (content: ChatMessage["content"]): string => {
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((p) => (typeof p?.text === "string" ? p.text : ""))
-      .filter(Boolean)
-      .join("\n");
-  };
 
   const systemText = messages
     .filter((m) => m.role === "system")
@@ -1542,16 +1543,6 @@ export function deriveCursorConversationKey(messages: ChatMessage[]): string | n
  */
 export function flattenMessages(messages: ChatMessage[]): string {
   if (!Array.isArray(messages) || messages.length === 0) return "";
-
-  const partsToText = (content: ChatMessage["content"]): string => {
-    if (typeof content === "string") return content;
-    if (content == null) return "";
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((p) => (typeof p?.text === "string" ? p.text : ""))
-      .filter(Boolean)
-      .join("\n");
-  };
 
   // System instructions go first as a labeled prefix. (The cursor executor
   // routes system messages through the KV blob channel — see Phase 7 — but
