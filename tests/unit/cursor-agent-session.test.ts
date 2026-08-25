@@ -7,8 +7,11 @@ import {
 import {
   flattenMessages,
   deriveCursorConversationKey,
-  parseConvertedToolResults,
 } from "../../open-sse/utils/cursorAgentProtobuf";
+import {
+  parseConvertedToolResults,
+  collectPendingToolResults,
+} from "../../open-sse/utils/cursorConvertedToolResults";
 
 // ─── Test doubles for h2 ───────────────────────────────────────────────────
 //
@@ -430,4 +433,22 @@ test("a converted tool-result message is recognised as a tool follow-up", () => 
   assert.equal(last.role === "tool", false, "the raw-role check alone must not fire");
   assert.equal(converted.length > 0, true, "the converted form must be detected");
   assert.equal(converted[0].toolCallId, "call_zz1");
+});
+
+test("collectPendingToolResults gathers both raw tool messages and converted blocks", () => {
+  const messages = [
+    { role: "user", content: "go" },
+    { role: "tool", tool_call_id: "call_raw", content: "raw-output" },
+    {
+      role: "user",
+      content:
+        "<tool_result><tool_call_id>call_conv</tool_call_id><result>conv-output</result></tool_result>",
+    },
+  ];
+  const converted = parseConvertedToolResults(messages[2].content);
+  const pending = collectPendingToolResults(messages as never, converted);
+  assert.equal(pending.length, 2);
+  assert.deepEqual(pending.map((p) => p.toolCallId).sort(), ["call_conv", "call_raw"]);
+  const conv = pending.find((p) => p.toolCallId === "call_conv");
+  assert.equal(conv?.result, "conv-output");
 });
