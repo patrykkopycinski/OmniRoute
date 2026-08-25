@@ -11,15 +11,13 @@
  * Lives in its own module because `cursorAgentProtobuf.ts` is at its frozen
  * file-size baseline (scripts/check/check-file-size.mjs) and may only shrink.
  *
- * WHY THE EXECUTOR'S USE OF THIS IS GATED OFF (OMNIROUTE_CURSOR_INLINE_RESUME=1):
- * measured 2026-08-24 against live cursor-grok-4.6-high, detection works — the
- * gate opens, `toolFollowUp=true`, and `cursorSessionManager.acquire()` returns a
- * session for the first time. But the resumed h2 stream then yields NO bytes and
- * the request hangs until the client aborts (179992ms / request_signal_aborted).
- * That is exactly the wedge the translator header documents: cursor loops or
- * stalls when tool outputs arrive as protobuf ExecMcpResult with partial schema
- * mismatches. Cold resume re-sends the full history and is slower, but it answers.
- * Fixing the wedge means matching cursor's own client framing for ExecMcpResult.
+ * INLINE RESUME IS ON BY DEFAULT (set OMNIROUTE_CURSOR_INLINE_RESUME=0 to disable):
+ * an earlier 2026-08-24 run concluded the resumed h2 stream wedged (no bytes for
+ * ~180s). That was re-tested on 2026-08-25 against live cursor-grok-4.6 with the
+ * gate on and did NOT reproduce: `sendToolResult` wrote the ExecMcpResult frame and
+ * cursor answered with 206 inbound frames. Four consecutive tool follow-ups resumed
+ * inline in 3.7-7.4s, and a 40-turn history resumed in 7.5-8.2s. The earlier hang
+ * was not reproducible and the wedge hypothesis is retired.
  */
 
 /**
