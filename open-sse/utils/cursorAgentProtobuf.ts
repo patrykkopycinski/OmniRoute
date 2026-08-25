@@ -1510,6 +1510,7 @@ function partsToText(content: ChatMessage["content"]): string {
  * user message) — the caller then falls back to a random id, preserving the
  * old behavior rather than colliding every keyless request onto one session.
  */
+
 export function deriveCursorConversationKey(messages: ChatMessage[]): string | null {
   if (!Array.isArray(messages) || messages.length === 0) return null;
 
