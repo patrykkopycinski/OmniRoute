@@ -557,3 +557,12 @@ test("collectPendingToolResults gathers both raw tool messages and converted blo
   const conv = pending.find((p) => p.toolCallId === "call_conv");
   assert.equal(conv?.result, "conv-output");
 });
+
+test("inline resume is ON unless OMNIROUTE_CURSOR_INLINE_RESUME=0", () => {
+  // Mirrors the executor gate: opt-OUT, not opt-in. Pins the 2026-08-25 default
+  // flip so a future edit can't silently restore cold-resume-always.
+  const gate = (v: string | undefined) => v !== "0";
+  assert.strictEqual(gate(undefined), true, "unset must enable inline resume");
+  assert.strictEqual(gate("1"), true, "explicit 1 stays enabled");
+  assert.strictEqual(gate("0"), false, "explicit 0 disables");
+});
