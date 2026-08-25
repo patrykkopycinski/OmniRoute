@@ -11,13 +11,17 @@
  * Lives in its own module because `cursorAgentProtobuf.ts` is at its frozen
  * file-size baseline (scripts/check/check-file-size.mjs) and may only shrink.
  *
- * INLINE RESUME IS ON BY DEFAULT (set OMNIROUTE_CURSOR_INLINE_RESUME=0 to disable):
- * an earlier 2026-08-24 run concluded the resumed h2 stream wedged (no bytes for
- * ~180s). That was re-tested on 2026-08-25 against live cursor-grok-4.6 with the
- * gate on and did NOT reproduce: `sendToolResult` wrote the ExecMcpResult frame and
- * cursor answered with 206 inbound frames. Four consecutive tool follow-ups resumed
- * inline in 3.7-7.4s, and a 40-turn history resumed in 7.5-8.2s. The earlier hang
- * was not reproducible and the wedge hypothesis is retired.
+ * INLINE RESUME IS OFF BY DEFAULT (opt in with OMNIROUTE_CURSOR_INLINE_RESUME=1).
+ * The stall is REAL but INTERMITTENT, which is why it has been called both ways:
+ *   - 2026-08-24, live cursor-grok-4.6-high: resumed stream yielded no bytes for
+ *     ~180s until the client aborted (request_signal_aborted).
+ *   - 2026-08-25, scratch container with the gate on: 4/4 tool follow-ups resumed
+ *     inline in 3.7-7.4s, and a 40-turn history in 7.5-8.2s. `sendToolResult` wrote
+ *     the ExecMcpResult frame and cursor answered with 206 inbound frames, so the
+ *     framing is NOT malformed (wrapExecClientMessage already Connect-wraps it).
+ *   - 2026-08-25, same build promoted to prod: turn 2 timed out again.
+ * Two clean passes are not enough to call it fixed — the failure needs a
+ * reproducer before this can flip on. Cold resume is slower but always answers.
  */
 
 /**
