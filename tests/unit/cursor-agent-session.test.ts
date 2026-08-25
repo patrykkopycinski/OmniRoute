@@ -8,6 +8,10 @@ import {
   flattenMessages,
   deriveCursorConversationKey,
 } from "../../open-sse/utils/cursorAgentProtobuf";
+import {
+  parseConvertedToolResults,
+  collectPendingToolResults,
+} from "../../open-sse/utils/cursorConvertedToolResults";
 
 // ─── Test doubles for h2 ───────────────────────────────────────────────────
 //
@@ -353,4 +357,98 @@ test("deriveCursorConversationKey keys off the prefix, not later user turns", ()
   ];
   // Same thread, so the key must not move when the user speaks again.
   assert.equal(deriveCursorConversationKey(later), deriveCursorConversationKey(base));
+});
+
+// ─── Converted tool-result blocks (the shape the executor actually sees) ─────
+
+test("parseConvertedToolResults ignores content that is not a converted block", () => {
+  assert.deepEqual(parseConvertedToolResults("just a normal question"), []);
+  assert.deepEqual(parseConvertedToolResults(undefined), []);
+  assert.deepEqual(parseConvertedToolResults(null), []);
+  assert.deepEqual(parseConvertedToolResults([{ type: "text", text: "hi" }]), []);
+});
+
+test("parseConvertedToolResults recovers the id and result the translator encoded", () => {
+  // Exactly what openai-to-cursor's buildToolResultBlock emits for a tool turn.
+  const block = [
+    "<tool_result>",
+    "<tool_name>get_weather</tool_name>",
+    "<tool_call_id>call_zz1</tool_call_id>",
+    "<result>18C sunny</result>",
+    "</tool_result>",
+  ].join("\n");
+  assert.deepEqual(parseConvertedToolResults(block), [
+    { toolCallId: "call_zz1", result: "18C sunny" },
+  ]);
+});
+
+test("parseConvertedToolResults unescapes XML entities in the result", () => {
+  const block = [
+    "<tool_result>",
+    "<tool_name>run</tool_name>",
+    "<tool_call_id>call_amp</tool_call_id>",
+    "<result>a &lt;b&gt; &amp;&amp; c</result>",
+    "</tool_result>",
+  ].join("\n");
+  assert.deepEqual(parseConvertedToolResults(block), [
+    { toolCallId: "call_amp", result: "a <b> && c" },
+  ]);
+});
+
+test("parseConvertedToolResults handles several tool results in one message", () => {
+  const mk = (id: string, r: string) =>
+    `<tool_result>\n<tool_name>t</tool_name>\n<tool_call_id>${id}</tool_call_id>\n<result>${r}</result>\n</tool_result>`;
+  assert.deepEqual(parseConvertedToolResults(`${mk("a1", "one")}\n${mk("b2", "two")}`), [
+    { toolCallId: "a1", result: "one" },
+    { toolCallId: "b2", result: "two" },
+  ]);
+});
+
+test("parseConvertedToolResults skips a block with no tool_call_id", () => {
+  // Without an id there is nothing to match against pendingToolCalls, so the
+  // block must not produce a phantom entry that fakes a tool follow-up.
+  const block = "<tool_result>\n<tool_name>t</tool_name>\n<result>orphan</result>\n</tool_result>";
+  assert.deepEqual(parseConvertedToolResults(block), []);
+});
+
+test("a converted tool-result message is recognised as a tool follow-up", () => {
+  // Regression guard for the live defect: the openai→cursor translator rewrites
+  // role:"tool" into a user message carrying <tool_result>, so the executor's old
+  // `lastMessage.role === "tool"` test was false on every real request and inline
+  // resume never ran. Mirrors the exact message array captured from the running
+  // container: the tool role survives but is no longer last.
+  const messages = [
+    { role: "user" as const, content: "weather in Paris?" },
+    { role: "assistant" as const, content: "" },
+    { role: "tool" as const, tool_call_id: "call_zz1", content: "" },
+    {
+      role: "user" as const,
+      content:
+        "<tool_result>\n<tool_name>get_weather</tool_name>\n<tool_call_id>call_zz1</tool_call_id>\n<result>18C sunny</result>\n</tool_result>",
+    },
+  ];
+  const last = messages[messages.length - 1];
+  const converted = parseConvertedToolResults(last.content);
+
+  assert.equal(last.role === "tool", false, "the raw-role check alone must not fire");
+  assert.equal(converted.length > 0, true, "the converted form must be detected");
+  assert.equal(converted[0].toolCallId, "call_zz1");
+});
+
+test("collectPendingToolResults gathers both raw tool messages and converted blocks", () => {
+  const messages = [
+    { role: "user", content: "go" },
+    { role: "tool", tool_call_id: "call_raw", content: "raw-output" },
+    {
+      role: "user",
+      content:
+        "<tool_result><tool_call_id>call_conv</tool_call_id><result>conv-output</result></tool_result>",
+    },
+  ];
+  const converted = parseConvertedToolResults(messages[2].content);
+  const pending = collectPendingToolResults(messages as never, converted);
+  assert.equal(pending.length, 2);
+  assert.deepEqual(pending.map((p) => p.toolCallId).sort(), ["call_conv", "call_raw"]);
+  const conv = pending.find((p) => p.toolCallId === "call_conv");
+  assert.equal(conv?.result, "conv-output");
 });

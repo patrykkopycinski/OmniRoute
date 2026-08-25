@@ -39,6 +39,10 @@ import {
   type McpToolDefinition,
   type OpenAITool,
 } from "../utils/cursorAgentProtobuf.ts";
+import {
+  parseConvertedToolResults,
+  collectPendingToolResults,
+} from "../utils/cursorConvertedToolResults.ts";
 import { resolveCursorImages, extractImageUrls, CursorImageError } from "../utils/cursorImages.ts";
 import {
   estimateInputTokens,
@@ -1186,7 +1190,15 @@ export class CursorExecutor extends BaseExecutor {
       deriveCursorConversationKey(messages) ||
       crypto.randomUUID();
     const lastMessage = messages[messages.length - 1];
-    const isToolFollowUp = lastMessage?.role === "tool";
+    // Recognises BOTH tool-follow-up shapes (raw `role:"tool"` and the translator's
+    // converted `<tool_result>` user message). GATED OFF: detection works but the
+    // resumed stream wedges — see open-sse/utils/cursorConvertedToolResults.ts.
+    const inlineResumeEnabled = process.env.OMNIROUTE_CURSOR_INLINE_RESUME === "1";
+    const convertedToolResults = inlineResumeEnabled
+      ? parseConvertedToolResults(lastMessage?.content)
+      : [];
+    const isToolFollowUp =
+      inlineResumeEnabled && (lastMessage?.role === "tool" || convertedToolResults.length > 0);
 
     // Tools embedded in the RequestContext ack throughout the turn —
     // synced with mcp_tools in the encoded request body.
@@ -1262,12 +1274,10 @@ export class CursorExecutor extends BaseExecutor {
       blobStore = session.blobStore;
       let matched = 0;
       let hadFailure = false;
-      for (const msg of messages) {
-        if (msg.role !== "tool") continue;
-        const id = msg.tool_call_id ?? "";
-        if (!session.pendingToolCalls.has(id)) continue;
-        const content = typeof msg.content === "string" ? msg.content : "";
-        if (cursorSessionManager.sendToolResult(session, id, content, false)) {
+      const pending = collectPendingToolResults(messages, convertedToolResults);
+      for (const { toolCallId, result } of pending) {
+        if (!session.pendingToolCalls.has(toolCallId)) continue;
+        if (cursorSessionManager.sendToolResult(session, toolCallId, result, false)) {
           matched++;
         } else {
           hadFailure = true;
