@@ -1302,9 +1302,9 @@ export class CursorExecutor extends BaseExecutor {
       crypto.randomUUID();
     const lastMessage = messages[messages.length - 1];
     // Recognises BOTH tool-follow-up shapes (raw `role:"tool"` and the translator's
-    // converted `<tool_result>` user message). GATED OFF: detection works but the
-    // resumed stream wedges — see open-sse/utils/cursorConvertedToolResults.ts.
-    const inlineResumeEnabled = process.env.OMNIROUTE_CURSOR_INLINE_RESUME === "1";
+    // converted `<tool_result>` user message). ON by default; set
+    // OMNIROUTE_CURSOR_INLINE_RESUME=0 to force cold resume.
+    const inlineResumeEnabled = process.env.OMNIROUTE_CURSOR_INLINE_RESUME !== "0";
     const convertedToolResults = inlineResumeEnabled
       ? parseConvertedToolResults(lastMessage?.content)
       : [];
