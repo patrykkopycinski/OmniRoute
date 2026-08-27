@@ -1,4 +1,5 @@
 import { homedir } from "os";
+import { existsSync } from "node:fs";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { createKeyedMutex } from "@/shared/utils/keyedMutex";
 import { resolveCursorAgentBinary, runCursorAgent } from "@/lib/providerModels/cursorAgent";
@@ -75,7 +76,16 @@ export async function checkCursorAgentAvailability(): Promise<{
   available: boolean;
   binaryPath: string | null;
 }> {
-  const binary = resolveCursorAgentBinary({ allowPathFallback: false });
+  // Fixed candidate paths only (no PATH fallback) — unattended/unconfirmed
+  // execution should not trust PATH resolution. An explicit
+  // CURSOR_AGENT_BINARY/BIN override is still honored: a wired container
+  // must be able to run these checks even though no candidate path matches.
+  const hasOverride = Boolean(
+    (process.env.CURSOR_AGENT_BINARY || process.env.CURSOR_AGENT_BIN || "").trim()
+  );
+  const binary = hasOverride
+    ? resolveCursorAgentBinary()
+    : resolveCursorAgentBinary(process.env, existsSync, { allowPathFallback: false });
   if (!binary) {
     return { available: false, binaryPath: null };
   }
