@@ -47,6 +47,17 @@ export const KIMI_K27_MODELS: RegistryModel[] = [
 
 export const MOONSHOT_KIMI_MODELS: RegistryModel[] = [
   KIMI_K3_MODEL,
+  // Combo hop ids used on this gateway (main / best-coding-paid). Same
+  // windows as the official Moonshot catalog ids above — without these
+  // aliases the hops resolve as unknown and drop out of large-prompt fallback.
+  {
+    ...KIMI_K3_MODEL,
+    id: "k3-256k",
+    name: "Kimi K3 (256k hop)",
+    contextLength: 262144,
+    maxOutputTokens: 262144,
+  },
+  { ...KIMI_K27_MODELS[0], id: "kimi-for-coding", name: "Kimi K2.7 Code" },
   ...KIMI_K27_MODELS,
   {
     id: "kimi-k2.6",

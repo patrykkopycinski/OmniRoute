@@ -327,9 +327,9 @@ export async function validateResponseQuality(
     function isTerminalUsageOnlyChunk(parsed: Record<string, unknown>, eventType: string): boolean {
       return Boolean(
         parsed.usage &&
-          typeof parsed.usage === "object" &&
-          !Array.isArray(parsed.choices) &&
-          !eventType.startsWith("response.")
+        typeof parsed.usage === "object" &&
+        !Array.isArray(parsed.choices) &&
+        !eventType.startsWith("response.")
       );
     }
 
@@ -584,6 +584,18 @@ export async function validateResponseQuality(
           errMsg.includes("used already"))
       ) {
         return { valid: false, reason: "stream locked or disturbed" };
+      }
+      // Executor-signaled dead hop: the executor errored the stream before any
+      // usable content (e.g. cursor "completed turn with no usable content").
+      // Peeking saw no content and no terminator before the error, so this is
+      // NOT a transient read failure — mark invalid so combo fails over.
+      if (
+        !anyContentFound &&
+        !sse.hasLifecycleEnd &&
+        !openAi.hasTerminalMarker &&
+        !sawStructuredSSE
+      ) {
+        return { valid: false, reason: `stream error before any content: ${errMsg}` };
       }
       // Other read errors — pass through (stream readiness timeout will catch truly broken streams)
       return { valid: true };

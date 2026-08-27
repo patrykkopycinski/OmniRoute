@@ -35,7 +35,10 @@ export const cursorProvider: RegistryEntry = {
     { id: "gemini-3-flash", name: "Gemini 3 Flash" },
     { id: "grok-4.6-medium", name: "Grok 4.6 Medium" },
     { id: "grok-4.6-fast-medium", name: "Grok 4.6 Fast Medium" },
-    { id: "grok-4.6-high", name: "Grok 4.6 High" },
+    // Live combo hop (best-reasoning-paid / klaudiusz-opus). Cursor's
+    // advertised window is the provider default (200k); declare the real
+    // window so a large-prompt filter cannot treat this hop as unknown.
+    { id: "grok-4.6-high", name: "Grok 4.6 High", contextLength: 500000 },
     { id: "grok-4.6-fast-high", name: "Grok 4.6 Fast High" },
     { id: "grok-4.6-xhigh", name: "Grok 4.6 XHigh" },
     { id: "grok-4.6-fast-xhigh", name: "Grok 4.6 Fast XHigh" },

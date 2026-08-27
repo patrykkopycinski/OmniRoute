@@ -365,6 +365,21 @@ export function newStreamCtx(model: string, emit: (chunk: string) => void): Stre
   };
 }
 
+/**
+ * True when the driven turn produced any usable signal — visible text,
+ * thinking, a tool call, or a token delta. A turn completing with none of
+ * these is a dead hop masquerading as a legitimate empty completion
+ * (live: grok-4.6-high 200 OK, 0 tokens out, 20.6s). Exported for tests.
+ */
+export function ctxProducedSignal(ctx: StreamCtx): boolean {
+  return (
+    ctx.receivedText ||
+    ctx.thinkingText.length > 0 ||
+    ctx.toolCalls.length > 0 ||
+    ctx.tokenDelta > 0
+  );
+}
+
 function emitChunk(ctx: StreamCtx, delta: object, finishReason: string | null = null) {
   const payload = {
     id: ctx.responseId,
@@ -1118,20 +1133,27 @@ export class CursorExecutor extends BaseExecutor {
     return new Promise((resolve, reject) => {
       let scanning = false;
       let settled = false;
-      // Phase 8: safety timeout. If neither turn_ended, kv_after_text, nor
-      // server-end fires within CURSOR_STREAM_TIMEOUT_MS, abort the stream
-      // so a stuck upstream doesn't keep the response open indefinitely.
-      const safetyTimer = setTimeout(() => {
-        if (ctx.endReason) return;
-        debugLog("[cursor-agent] stream safety timeout fired");
-        teardown();
-        reject(new Error("cursor-agent stream timed out"));
-      }, CURSOR_STREAM_TIMEOUT_MS);
+      // Idle safety timeout, not wall-clock. A 5-minute *productive* composer
+      // turn must not die just because CURSOR_STREAM_TIMEOUT_MS elapsed since
+      // stream open. Only a silent hang (no frames) should abort so combo can
+      // fail over. Re-armed on every data frame.
+      let safetyTimer: ReturnType<typeof setTimeout>;
+      const armSafetyTimer = () => {
+        clearTimeout(safetyTimer);
+        safetyTimer = setTimeout(() => {
+          if (ctx.endReason || settled) return;
+          debugLog("[cursor-agent] stream safety timeout fired");
+          teardown();
+          reject(new Error("cursor-agent stream timed out"));
+        }, CURSOR_STREAM_TIMEOUT_MS);
+      };
+      armSafetyTimer();
 
       const onData = (chunk: Buffer) => {
         if (CURSOR_DEBUG && process.env.CURSOR_DUMP_FILE) {
           fs.appendFileSync(process.env.CURSOR_DUMP_FILE, chunk);
         }
+        armSafetyTimer();
         buf = buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([buf, chunk]);
         void tryScan();
       };
@@ -1479,6 +1501,15 @@ export class CursorExecutor extends BaseExecutor {
             const ctx = newStreamCtx(model, (s) => controller.enqueue(enc.encode(s)));
             try {
               await this.driveH2(h2, ctx, mcpTools, blobStore, clientPlatform, todoHistory, signal);
+              // A turn completing with zero decoded signal would finalize into a
+              // clean 200 the quality gate passes; error it so the peek's
+              // dead-before-token gate marks the hop invalid and combo fails
+              // over (see ctxProducedSignal).
+              if (!ctxProducedSignal(ctx)) {
+                finishLifecycle(ctx, true);
+                controller.error(new Error("cursor-agent completed turn with no usable content"));
+                return;
+              }
               this.finalizeSseStream(ctx, body);
               finishLifecycle(ctx, false);
               controller.close();
@@ -1538,6 +1569,22 @@ export class CursorExecutor extends BaseExecutor {
       const classified = classifyCursorError(message);
       return {
         response: buildErrorResponse(classified.status, classified.message, classified.type),
+        url,
+        headers,
+        transformedBody: body,
+      };
+    }
+    // Same empty-turn guard as the streaming path: a turn completed with zero
+    // usable signal is a dead hop, not a valid empty completion. 502 so the
+    // combo layer fails over.
+    if (!ctxProducedSignal(ctx)) {
+      finishLifecycle(ctx, true);
+      return {
+        response: buildErrorResponse(
+          HTTP_STATUS.SERVER_ERROR,
+          "cursor-agent completed turn with no usable content",
+          "connection_error"
+        ),
         url,
         headers,
         transformedBody: body,
