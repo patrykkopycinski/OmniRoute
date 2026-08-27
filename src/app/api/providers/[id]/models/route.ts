@@ -1326,7 +1326,14 @@ export async function GET(
       }
 
       try {
-        const models = ensureCursorAutoCatalogEntry(await fetchCursorAgentModels());
+        // `cursor-agent --list-models` is an authenticated call. Forward the
+        // connection's stored token so discovery works in environments with no
+        // `agent login` state (notably the Docker deployment), instead of
+        // silently degrading to the local catalog.
+        const agentToken = (accessToken || apiKey || "").replace(/^Bearer\s+/i, "").trim();
+        const models = ensureCursorAutoCatalogEntry(
+          await fetchCursorAgentModels(agentToken ? { authToken: agentToken } : {})
+        );
         return buildApiDiscoveryResponse(models);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
