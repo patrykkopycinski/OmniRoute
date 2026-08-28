@@ -370,6 +370,15 @@ export function newStreamCtx(model: string, emit: (chunk: string) => void): Stre
   };
 }
 
+export function ctxProducedSignal(ctx: StreamCtx): boolean {
+  return (
+    ctx.receivedText ||
+    ctx.thinkingText.length > 0 ||
+    ctx.toolCalls.length > 0 ||
+    ctx.tokenDelta > 0
+  );
+}
+
 function emitChunk(ctx: StreamCtx, delta: object, finishReason: string | null = null) {
   const payload = {
     id: ctx.responseId,
@@ -1113,7 +1122,7 @@ export class CursorExecutor extends BaseExecutor {
     clientPlatform: CursorClientPlatform | undefined,
     todoHistory: CursorTodoHistoryItem[] | undefined,
     signal?: AbortSignal
-  ): Promise<void> {
+  ): Promise<{ leftoverBytes: Buffer }> {
     const ackedExecIds = new Set<string>();
     // Rolling buffer: chunks arrive on `data`, get appended, and consumed
     // frames are sliced off so we don't re-scan + re-concat on every event
@@ -1145,7 +1154,7 @@ export class CursorExecutor extends BaseExecutor {
         settled = true;
         if (!ctx.endReason) ctx.endReason = "server_end";
         detachListeners();
-        resolve();
+        resolve({ leftoverBytes: Buffer.alloc(0) });
       };
       const onErr = (err: Error) => {
         if (settled) return;
@@ -1230,7 +1239,11 @@ export class CursorExecutor extends BaseExecutor {
               buf = buf.subarray(pos);
               settled = true;
               detachListeners();
-              resolve();
+              // Turn ended mid-stream (typically tool_calls): hand the
+              // unconsumed tail — the leading bytes of the server's next
+              // frame — back to the caller so an inline resume can re-seed
+              // its scan buffer at a true frame boundary.
+              resolve({ leftoverBytes: buf });
               return;
             }
           }
@@ -1407,8 +1420,14 @@ export class CursorExecutor extends BaseExecutor {
         h2 = {
           client: session.h2Client,
           req: session.h2Req,
-          initialBytes: Buffer.alloc(0),
+          // Seed the scan with any bytes that arrived after the last complete
+          // frame of the previous turn: without them the scanner would start
+          // mid-frame and misread payload bytes as a length header.
+          // Consume-once: clear after seeding so a failed turn between
+          // acquire and stream start can't re-seed stale bytes.
+          initialBytes: session.resumeBytes,
         };
+        session.resumeBytes = Buffer.alloc(0);
       }
     }
 
@@ -1491,7 +1510,27 @@ export class CursorExecutor extends BaseExecutor {
           start: async (controller) => {
             const ctx = newStreamCtx(model, (s) => controller.enqueue(enc.encode(s)));
             try {
-              await this.driveH2(h2, ctx, mcpTools, blobStore, clientPlatform, todoHistory, signal);
+              const { leftoverBytes } = await this.driveH2(
+                h2,
+                ctx,
+                mcpTools,
+                blobStore,
+                clientPlatform,
+                todoHistory,
+                signal
+              );
+              if (sessionToUse && ctx.endReason === "tool_calls") {
+                sessionToUse.resumeBytes = leftoverBytes;
+              }
+              // A turn completing with zero decoded signal would finalize into a
+              // clean 200 the quality gate passes; error it so the peek's
+              // dead-before-token gate marks the hop invalid and combo fails
+              // over (see ctxProducedSignal).
+              if (!ctxProducedSignal(ctx)) {
+                finishLifecycle(ctx, true);
+                controller.error(new Error("cursor-agent completed turn with no usable content"));
+                return;
+              }
               this.finalizeSseStream(ctx, body);
               finishLifecycle(ctx, false);
               controller.close();
@@ -1532,7 +1571,18 @@ export class CursorExecutor extends BaseExecutor {
     // Non-streaming: drive to completion, return chat.completion JSON.
     const ctx = newStreamCtx(model, () => {});
     try {
-      await this.driveH2(h2, ctx, mcpTools, blobStore, clientPlatform, todoHistory, signal);
+      const { leftoverBytes } = await this.driveH2(
+        h2,
+        ctx,
+        mcpTools,
+        blobStore,
+        clientPlatform,
+        todoHistory,
+        signal
+      );
+      if (sessionToUse && ctx.endReason === "tool_calls") {
+        sessionToUse.resumeBytes = leftoverBytes;
+      }
     } catch (err) {
       if (
         isCursorBenignCancelError(err) &&
