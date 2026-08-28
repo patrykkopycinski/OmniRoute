@@ -120,15 +120,17 @@ test("caps adaptive timeout at maxTimeoutMs", () => {
   assert.ok(result.reasons.includes("very_large_payload"));
 });
 
-test("uses a 180s adaptive cap by default for very large agent requests", () => {
+test("uses a 240s adaptive cap by default for very large agent requests", () => {
   const result = resolveStreamReadinessTimeout({
     baseTimeoutMs: 80_000,
     provider: "codex",
-    model: "gpt-5.5",
+    model: "gpt-5.5-high",
     body: { input: items(500), tools: tools(20), instructions: "x".repeat(800_000) },
   });
 
-  assert.equal(result.timeoutMs, 180_000);
+  // 80 base + 45 very_large_history + 15 tool_heavy + 45 very_large_payload
+  // + 30 codex-high = 215s — no longer clipped by the old 180s ceiling.
+  assert.equal(result.timeoutMs, 215_000);
   assert.ok(result.reasons.includes("very_large_history"));
   assert.ok(result.reasons.includes("very_large_payload"));
 });
@@ -163,7 +165,7 @@ test("bumps small requests to third-party Claude-format replicas (agentrouter, Z
   );
 });
 
-test("does NOT bump Minimax (M3) — #3110 moved it from claude to openai format so images work, and the readiness bump is keyed off the registry's `format: \"claude\"` field", () => {
+test('does NOT bump Minimax (M3) — #3110 moved it from claude to openai format so images work, and the readiness bump is keyed off the registry\'s `format: "claude"` field', () => {
   // Minimax's replica quirk (long reasoning warm-up) hasn't changed, but this
   // policy intentionally keys off the translator format, not the provider
   // name — the registry is the single source of truth (see isClaudeFormatReasoningProvider
@@ -265,4 +267,54 @@ test("treats unknown provider names as non-Claude-format (no false positives)", 
 
   assert.equal(result.timeoutMs, 80_000);
   assert.ok(!result.reasons.includes("claude_format_heavy_reasoning"));
+});
+
+test("bumps cursor readiness budget by 90s — cursor-grok cold-starts run 150-190s on large prompts (live 504s at 115s)", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "cursor",
+    model: "cursor-grok-4.6-high",
+    body: { messages: items(200), tools: tools(20) },
+  });
+
+  // 80s base + 20s large_history + 15s tool_heavy + 90s cursor tail = 205s,
+  // under the 240s cap.
+  assert.equal(result.timeoutMs, 205_000);
+  assert.ok(result.reasons.includes("cursor_cold_start_tail"));
+});
+
+test("cursor bump applies even for small requests — the cold-start tail is prompt-size independent", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "cursor",
+    model: "cursor-auto",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 170_000);
+  assert.ok(result.reasons.includes("cursor_cold_start_tail"));
+});
+
+test("cursor bump is capped at maxTimeoutMs like every other bump", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    maxTimeoutMs: 120_000,
+    provider: "cursor",
+    model: "cursor-grok-4.6-high",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 120_000);
+});
+
+test("cursor bump does not fire for non-cursor providers", () => {
+  const result = resolveStreamReadinessTimeout({
+    baseTimeoutMs: 80_000,
+    provider: "openrouter",
+    model: "grok-4",
+    body: { messages: items(3) },
+  });
+
+  assert.equal(result.timeoutMs, 80_000);
+  assert.ok(!result.reasons.includes("cursor_cold_start_tail"));
 });

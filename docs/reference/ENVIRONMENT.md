@@ -721,7 +721,7 @@ REQUEST_TIMEOUT_MS (global override)
 │   └── FETCH_KEEPALIVE_TIMEOUT_MS (independent, default: 4000)
 ├─→ STREAM_IDLE_TIMEOUT_MS (inherits from REQUEST_TIMEOUT_MS, default: 600000)
 ├─→ STREAM_READINESS_TIMEOUT_MS (inherits from REQUEST_TIMEOUT_MS, default: 80000)
-├─→ STREAM_READINESS_MAX_TIMEOUT_MS (caps adaptive readiness extensions, default: 180000)
+├─→ STREAM_READINESS_MAX_TIMEOUT_MS (caps adaptive readiness extensions, default: 240000)
 └─→ API_BRIDGE_PROXY_TIMEOUT_MS (inherits from REQUEST_TIMEOUT_MS, default: 30000)
     ├─→ API_BRIDGE_SERVER_REQUEST_TIMEOUT_MS (derived, default: 300000)
     ├── API_BRIDGE_SERVER_HEADERS_TIMEOUT_MS (default: 60000)
@@ -736,7 +736,7 @@ REQUEST_TIMEOUT_MS (global override)
 | `STREAM_IDLE_TIMEOUT_MS`                  | `600000`             | Max silence between SSE chunks before aborting. Extended-thinking models rarely pause >90s.                                                                     |
 | `OMNIROUTE_SSE_COMMENTS`                  | _(disabled)_         | Whether OmniRoute may emit SSE `:` comment lines (e.g. the `: keepalive` heartbeat and `x-omniroute-*` metadata trailers). Disabled by default (#10524) since strict OpenAI-compatible clients JSON.parse every SSE line and crash on `:` comments; `data:` heartbeats are unaffected. Set `on`/`true`/`1`/`yes` to opt back in. Used by `open-sse/utils/sseHeartbeat.ts`.                |
 | `STREAM_READINESS_TIMEOUT_MS`             | `80000`              | Time to receive the first non-ping SSE event. Inherits `REQUEST_TIMEOUT_MS` when set.                                                                           |
-| `STREAM_READINESS_MAX_TIMEOUT_MS`         | `180000`             | Maximum adaptive first-event readiness window for large, tool-heavy, or high-reasoning streaming requests.                                                       |
+| `STREAM_READINESS_MAX_TIMEOUT_MS`         | `240000`             | Maximum adaptive first-event readiness window for large, tool-heavy, or high-reasoning streaming requests.                                                       |
 | `OMNIROUTE_AGENT_GOAL_POLICY_ENABLED`     | `true`               | Kill-switch for the `/goal` heuristic. Set `false`/`0`/`off` to fully disable detection — readiness timeouts and stream recovery are never elevated by request body/headers, mitigating client-controlled timeout amplification. |
 | `OMNIROUTE_AGENT_GOAL_READINESS_MAX_TIMEOUT_MS` | `600000`      | Maximum first-event readiness window for detected `/goal` agent runs or requests forced with `x-omniroute-agent-goal`.                                          |
 | `OMNIROUTE_AGENT_GOAL_STREAM_RECOVERY`    | `true`               | Enable early stream recovery automatically for detected `/goal` agent runs. Set `false`/`0`/`off` to disable the goal-specific opt-in. This can only ADD recovery on top of the operator default — it never overrides an explicit `STREAM_RECOVERY_ENABLED`/DB settings opt-out. |

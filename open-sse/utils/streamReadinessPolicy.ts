@@ -17,7 +17,11 @@ export type StreamReadinessPolicyResult = {
   reasons: string[];
 };
 
-const DEFAULT_MAX_TIMEOUT_MS = 180_000;
+// Default ceiling for adaptive readiness extensions. Cursor-grok cold-starts
+// run 150-190s to first SSE event, so 180s clipped the cursor_cold_start_tail
+// bump before it could take effect (live 504s). Keep in sync with
+// DEFAULT_STREAM_READINESS_MAX_TIMEOUT_MS in runtimeTimeouts.ts.
+const DEFAULT_MAX_TIMEOUT_MS = 240_000;
 const LARGE_ITEM_THRESHOLD = 150;
 const VERY_LARGE_ITEM_THRESHOLD = 400;
 const TOOL_HEAVY_THRESHOLD = 15;
@@ -160,6 +164,17 @@ export function resolveStreamReadinessTimeout(
   if (isClaudeFormatReasoningProvider(input.provider) && !codexHighReasoning) {
     timeoutMs += 30_000;
     reasons.push("claude_format_heavy_reasoning");
+  }
+
+  // Cursor (cursor-agent h2 protocol) shows a long cold-start tail on large
+  // prompts — observed 150-190s to first SSE event on cursor-grok with big
+  // agent histories, far beyond the 80s base +20s large-history bump that
+  // produced live 504 "no non-ping SSE event within 115000ms" failures. Add a
+  // dedicated bump so the hop gets a real chance instead of being guillotined
+  // at the readiness window; the maxTimeoutMs cap still bounds the worst case.
+  if ((input.provider || "").toLowerCase() === "cursor") {
+    timeoutMs += 90_000;
+    reasons.push("cursor_cold_start_tail");
   }
 
   timeoutMs = Math.min(timeoutMs, maxTimeoutMs);
