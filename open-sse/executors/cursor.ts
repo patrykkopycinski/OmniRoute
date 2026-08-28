@@ -244,10 +244,14 @@ const CURSOR_STREAM_TIMEOUT_MS = (() => {
 // Upper bound on a single Connect-RPC frame. The 4-byte length prefix can
 // declare up to 4 GiB; a corrupt or hostile upstream could send a huge length
 // that forces driveH2's rolling buffer to grow unbounded (OOM) while it waits
-// for bytes that never arrive. Real cursor frames are well under 1 MiB
-// (largest observed: a ~13 KB KV blob), so 16 MiB is a generous ceiling that
-// turns the failure into a clean stream error instead of memory exhaustion.
-const CURSOR_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// for bytes that never arrive. Real cursor frames observed in production are
+// usually well under 1 MiB, but a big agent context flattened into a single
+// turn-1 frame can legitimately reach tens of MiB (observed live: 42 MiB on a
+// best-coding-paid cold open). 64 MiB is a ceiling that still stops the
+// GB-scale garbage a mid-stream desync produces (1-4 GB) while admitting any
+// plausible real frame; overridable for operators who need a different bound.
+const CURSOR_MAX_FRAME_BYTES =
+  Number.parseInt(process.env.CURSOR_MAX_FRAME_BYTES ?? "", 10) || 64 * 1024 * 1024;
 
 type CursorHttpResponse = {
   status: number;
