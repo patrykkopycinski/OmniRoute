@@ -317,9 +317,6 @@ function findInsensitive<T>(obj: Record<string, T> | null | undefined, key: stri
       // Matches the pre-fix scan's silent first-match-wins behavior, just surfaced
       // instead of swallowed.
       if (index.has(lowerKey)) {
-        console.debug(
-          `[modelMetadataRegistry] findInsensitive: case-insensitive key collision on "${lowerKey}" — keeping first-seen value, later one discarded`
-        );
         continue;
       }
       index.set(lowerKey, v);
