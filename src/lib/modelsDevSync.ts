@@ -260,7 +260,15 @@ export function getModelsDevPricing(): PricingByProvider {
     const key = rawKey.toLowerCase();
     try {
       if (!synced[key]) {
-        synced[key] = JSON.parse(rawValue) as PricingModels;
+        const raw = JSON.parse(rawValue) as PricingModels;
+        // Normalize model IDs to lowercase on read — fixes existing DB rows written
+        // before this normalization was applied. First-seen wins on collision.
+        const normalized: PricingModels = {};
+        for (const [modelId, pricing] of Object.entries(raw)) {
+          const normId = modelId.toLowerCase();
+          if (!(normId in normalized)) normalized[normId] = pricing;
+        }
+        synced[key] = normalized;
       }
     } catch {
       console.warn(`[MODELS_DEV] Corrupted pricing data for provider "${key}", skipping`);
@@ -292,7 +300,17 @@ export function saveModelsDevPricing(data: PricingByProvider): void {
       const key = provider.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      insert.run(key, JSON.stringify(models));
+      // Also normalize model IDs to lowercase. Providers like openrouter and siliconflow
+      // return the same model under different casing (e.g. "moonshotai/Kimi-K2.5" vs
+      // "moonshotai/kimi-k2.5"). The first-seen value wins on collision.
+      const normalizedModels: Record<string, unknown> = {};
+      for (const [modelId, pricing] of Object.entries(models)) {
+        const normalizedId = modelId.toLowerCase();
+        if (!(normalizedId in normalizedModels)) {
+          normalizedModels[normalizedId] = pricing;
+        }
+      }
+      insert.run(key, JSON.stringify(normalizedModels));
     }
   });
   tx();
