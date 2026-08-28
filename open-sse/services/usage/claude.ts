@@ -148,9 +148,6 @@ export async function getClaudeUsage(accessToken?: string) {
     }
 
     // Fallback: OAuth endpoint returned non-OK, try legacy settings/org endpoint
-    console.debug(
-      `[Claude Usage] OAuth endpoint returned ${oauthResponse.status}, falling back to legacy`
-    );
     const legacy = await getClaudeUsageLegacy(accessToken);
     return { ...legacy, bootstrap: await bootstrapPromise };
   } catch (error) {

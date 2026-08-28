@@ -1420,7 +1420,7 @@ export async function getProviderCredentials(
             retryAfterHuman: formatRetryAfter(earliest),
           };
         }
-        log.warn("AUTH", `${provider} | ${allConnections.length} accounts found but none active`);
+        log.debug("AUTH", `${provider} | ${allConnections.length} accounts found but none active`);
         allConnections.forEach((c) => {
           log.debug(
             "AUTH",
@@ -1471,7 +1471,7 @@ export async function getProviderCredentials(
         return geminiEnvCredentials;
       }
       invalidateManagedLease(options, "CONNECTION_INELIGIBLE");
-      log.warn("AUTH", `No credentials for ${provider}`);
+      log.debug("AUTH", `No credentials for ${provider}`);
       return null;
     }
 

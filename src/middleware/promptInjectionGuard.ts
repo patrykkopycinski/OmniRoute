@@ -33,7 +33,7 @@ export function createInjectionGuard(options: PromptInjectionGuardrailOptions = 
 
     const decision = evaluatePromptInjection(body, options, {
       disabledGuardrails: resolveDisabledGuardrails({ body }),
-      log: options.logger || console,
+      log: options.logger ?? null,
     });
     return {
       blocked: decision.blocked,
@@ -89,10 +89,7 @@ export function withInjectionGuard(handler: any, options: any = {}) {
         if (result.flagged) {
           try {
             request.headers.set("X-Injection-Flagged", "true");
-            request.headers.set(
-              "X-Injection-Detections",
-              String(result.detections.length)
-            );
+            request.headers.set("X-Injection-Detections", String(result.detections.length));
           } catch {
             // immutable headers: detection still applied; metadata is best-effort
           }
