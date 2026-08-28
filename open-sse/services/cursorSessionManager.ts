@@ -44,6 +44,15 @@ export type CursorSession = {
   state: "running" | "awaiting_tool_result" | "closed";
   lastActivityTs: number;
   idleTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Bytes that arrived on the h2 stream after the last complete frame of the
+   * previous turn — i.e. the leading bytes of the server's NEXT frame, which
+   * begins arriving while the tool result is still being produced. Kept across
+   * turns so an inline resume starts scanning at a true frame boundary instead
+   * of misreading mid-frame payload bytes as a length header (observed live as
+   * "cursor-agent frame too large (2.6 GB)" desyncs). Empty on cold open.
+   */
+  resumeBytes: Buffer;
 };
 
 export class CursorSessionManager {
@@ -92,6 +101,7 @@ export class CursorSessionManager {
       pendingToolCalls: new Map(),
       state: "running",
       lastActivityTs: Date.now(),
+      resumeBytes: Buffer.alloc(0),
     };
     this.sessions.set(conversationId, session);
     this.attachCloseHandlers(session);

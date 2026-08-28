@@ -37,22 +37,28 @@ const NONE = () => false;
 
 describe("resolveCursorAgentBinary — CURSOR_AGENT_BINARY override", () => {
   it("honours CURSOR_AGENT_BINARY (the only lever that works in Docker)", () => {
-    const bin = resolveCursorAgentBinary(
-      { CURSOR_AGENT_BINARY: "/opt/cursor-agent/versions/x/cursor-agent" },
-      NONE
-    );
+    const bin = resolveCursorAgentBinary({
+      env: { CURSOR_AGENT_BINARY: "/opt/cursor-agent/versions/x/cursor-agent" },
+      fileExists: NONE,
+    });
     // THE REGRESSION ASSERTION: before this change no env override existed, so a
     // containerized deployment could never resolve a bind-mounted binary.
     assert.equal(bin, "/opt/cursor-agent/versions/x/cursor-agent");
   });
 
   it("accepts the legacy CURSOR_AGENT_BIN alias", () => {
-    assert.equal(resolveCursorAgentBinary({ CURSOR_AGENT_BIN: "/mnt/ca" }, NONE), "/mnt/ca");
+    assert.equal(
+      resolveCursorAgentBinary({ env: { CURSOR_AGENT_BIN: "/mnt/ca" }, fileExists: NONE }),
+      "/mnt/ca"
+    );
   });
 
   it("prefers CURSOR_AGENT_BINARY over the legacy alias", () => {
     assert.equal(
-      resolveCursorAgentBinary({ CURSOR_AGENT_BINARY: "/a", CURSOR_AGENT_BIN: "/b" }, NONE),
+      resolveCursorAgentBinary({
+        env: { CURSOR_AGENT_BINARY: "/a", CURSOR_AGENT_BIN: "/b" },
+        fileExists: NONE,
+      }),
       "/a"
     );
   });
@@ -60,32 +66,41 @@ describe("resolveCursorAgentBinary — CURSOR_AGENT_BINARY override", () => {
   it("returns a configured-but-missing override verbatim (actionable over 'not found')", () => {
     // Reporting the wrong configured path beats a generic miss — the operator
     // needs to know the override is what's broken.
-    assert.equal(resolveCursorAgentBinary({ CURSOR_AGENT_BINARY: "/nope" }, NONE), "/nope");
+    assert.equal(
+      resolveCursorAgentBinary({ env: { CURSOR_AGENT_BINARY: "/nope" }, fileExists: NONE }),
+      "/nope"
+    );
   });
 
   it("ignores a blank/whitespace override and falls through to path probing", () => {
     assert.equal(
-      resolveCursorAgentBinary({ CURSOR_AGENT_BINARY: "   " }, only("/usr/bin/cursor-agent")),
+      resolveCursorAgentBinary({
+        env: { CURSOR_AGENT_BINARY: "   " },
+        fileExists: only("/usr/bin/cursor-agent"),
+      }),
       "/usr/bin/cursor-agent"
     );
   });
 
   it("still probes the standard install locations when no override is set", () => {
     assert.equal(
-      resolveCursorAgentBinary({}, only("/usr/local/bin/cursor-agent")),
+      resolveCursorAgentBinary({ env: {}, fileExists: only("/usr/local/bin/cursor-agent") }),
       "/usr/local/bin/cursor-agent"
     );
   });
 
   it("still falls back to a PATH lookup", () => {
     assert.equal(
-      resolveCursorAgentBinary({ PATH: "/x:/opt/bin" }, only("/opt/bin/cursor-agent")),
+      resolveCursorAgentBinary({
+        env: { PATH: "/x:/opt/bin" },
+        fileExists: only("/opt/bin/cursor-agent"),
+      }),
       "/opt/bin/cursor-agent"
     );
   });
 
   it("returns null when nothing resolves", () => {
-    assert.equal(resolveCursorAgentBinary({ PATH: "/x" }, NONE), null);
+    assert.equal(resolveCursorAgentBinary({ env: { PATH: "/x" }, fileExists: NONE }), null);
   });
 });
 

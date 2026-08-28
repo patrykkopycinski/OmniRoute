@@ -1,5 +1,4 @@
 import { homedir } from "os";
-import { existsSync } from "node:fs";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 import { createKeyedMutex } from "@/shared/utils/keyedMutex";
 import { resolveCursorAgentBinary, runCursorAgent } from "@/lib/providerModels/cursorAgent";
@@ -85,7 +84,7 @@ export async function checkCursorAgentAvailability(): Promise<{
   );
   const binary = hasOverride
     ? resolveCursorAgentBinary()
-    : resolveCursorAgentBinary(process.env, existsSync, { allowPathFallback: false });
+    : resolveCursorAgentBinary({ allowPathFallback: false });
   if (!binary) {
     return { available: false, binaryPath: null };
   }
