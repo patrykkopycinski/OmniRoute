@@ -70,11 +70,15 @@ export function runCursorAgent(
 // bind-mounted binary, e.g.
 //   docker run -v ~/.local/share/cursor-agent:/opt/cursor-agent:ro \
 //              -e CURSOR_AGENT_BINARY=/opt/cursor-agent/versions/<v>/cursor-agent
-export function resolveCursorAgentBinary(
-  env: NodeJS.ProcessEnv = process.env,
-  fileExists: (p: string) => boolean = existsSync,
-  options?: { allowPathFallback?: boolean }
-): string | null {
+type CursorAgentResolveOptions = {
+  allowPathFallback?: boolean;
+  env?: NodeJS.ProcessEnv;
+  fileExists?: (p: string) => boolean;
+};
+
+export function resolveCursorAgentBinary(options: CursorAgentResolveOptions = {}): string | null {
+  const env = options.env ?? process.env;
+  const fileExists = options.fileExists ?? existsSync;
   const override = (env.CURSOR_AGENT_BINARY || env.CURSOR_AGENT_BIN || "").trim();
   if (override) {
     // Return the override even when it doesn't exist so the caller can report the

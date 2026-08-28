@@ -267,16 +267,18 @@ if (selfExitMs) {
   it("sends SIGKILL after the follow-up window when the process ignores SIGTERM", async () => {
     // A freshly spawned node process (via the #!/usr/bin/env node shebang) needs
     // real wall-clock time to start up and register its SIGTERM handler before
-    // the handler can take effect — empirically, 150-200ms was flaky in this
-    // sandboxed environment (SIGTERM won the race and killed the process before
-    // the handler was installed). 600ms/200ms gives a comfortable margin.
+    // the handler can take effect. 600ms/200ms proved flaky under parallel
+    // test load (node boot can exceed 600ms when several suites spawn
+    // subprocesses at once, so SIGTERM landed before the handler was
+    // installed). 3000ms/500ms keeps the assertion meaningful while giving
+    // node boot a comfortable margin under load.
     const start = Date.now();
-    const result = await runCursorAgent(binary, [], 600, { sigkillFollowupMs: 200 });
+    const result = await runCursorAgent(binary, [], 3000, { sigkillFollowupMs: 500 });
     const elapsed = Date.now() - start;
     assert.equal(result.signal, "SIGKILL");
     assert.ok(
-      elapsed >= 600,
-      `SIGKILL cannot fire before the SIGTERM timeout (600ms), got ${elapsed}ms`
+      elapsed >= 3000,
+      `SIGKILL cannot fire before the SIGTERM timeout (3000ms), got ${elapsed}ms`
     );
     assert.ok(elapsed < 10_000, `expected the SIGKILL follow-up well under 10s, got ${elapsed}ms`);
   });
