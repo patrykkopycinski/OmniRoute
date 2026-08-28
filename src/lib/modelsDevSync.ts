@@ -254,11 +254,14 @@ export function getModelsDevPricing(): PricingByProvider {
   const synced: PricingByProvider = {};
   for (const row of rows) {
     const record = toRecord(row);
-    const key = typeof record.key === "string" ? record.key : null;
+    const rawKey = typeof record.key === "string" ? record.key : null;
     const rawValue = typeof record.value === "string" ? record.value : null;
-    if (!key || rawValue === null) continue;
+    if (!rawKey || rawValue === null) continue;
+    const key = rawKey.toLowerCase();
     try {
-      synced[key] = JSON.parse(rawValue) as PricingModels;
+      if (!synced[key]) {
+        synced[key] = JSON.parse(rawValue) as PricingModels;
+      }
     } catch {
       console.warn(`[MODELS_DEV] Corrupted pricing data for provider "${key}", skipping`);
     }
@@ -279,8 +282,17 @@ export function saveModelsDevPricing(data: PricingByProvider): void {
   );
   const tx = db.transaction(() => {
     del.run();
+    // Normalize provider keys to lowercase before storing. models.dev occasionally
+    // returns the same provider with different casing across sync runs (e.g.
+    // "moonshotai/kimi-K2.5" vs "moonshotai/kimi-k2.5"). Without normalization those
+    // land as separate DB rows and trigger a collision warning in findInsensitive on
+    // every read. Last-write-wins on duplicate lowercase keys is correct behavior here.
+    const seen = new Set<string>();
     for (const [provider, models] of Object.entries(data)) {
-      insert.run(provider, JSON.stringify(models));
+      const key = provider.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      insert.run(key, JSON.stringify(models));
     }
   });
   tx();
@@ -434,7 +446,7 @@ const SYNCED_CAPABILITY_FALLBACK_ALIASES: Record<string, string[]> = {
 
 function lookupSyncedCapabilityWithFallbacks(
   provider: string,
-  modelId: string,
+  _modelId: string,
   lookup: (provider: string) => ModelCapabilityEntry | null
 ): ModelCapabilityEntry | null {
   const direct = lookup(provider);
