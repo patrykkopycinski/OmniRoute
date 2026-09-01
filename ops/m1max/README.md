@@ -61,7 +61,7 @@ repair tool ⇒ nothing rung 4 can do). Deliberately **structural** — do not
 re-key this on a marker string like `kvAfterTextSeen`; markers come and go as
 fixes land upstream, which is what caused loop #1.
 
-### Rung 4 is dead weight on every current image
+### Rung 4 removed outright (2026-09-01)
 
 Audited 2026-09-01 across all six OmniRoute images on the host — **every one**
 runs TS source (`ts=yes`), including the stock `v3851-c661e1c81` rollback and
@@ -69,19 +69,19 @@ images back to `2911ad086-cachefix-20260822`. The container's command is
 `node dev/run-standalone.mjs`, executing `/app/open-sse/*.ts` directly.
 
 The 12,317 files under `/app/.build/next/server/chunks/` **exist but are never
-loaded**. Rung 4 patches them, then restarts to "apply" changes that cannot
+loaded**. Rung 4 patched them, then restarted to "apply" changes that could not
 take effect. It has been structurally incapable of helping since this host
 moved to `Dockerfile.local` images.
 
+**Removed** — 111 lines, watchdog 334 → 240, replaced by a comment block
+recording what it did and why it went. Restore from git history if a
+chunk-based image is ever deployed again; the effective-repair guard described
+above must come back with it.
+
 `reapply-compat-patches.js` is dated **Aug 12** and lives in the
 `omniroute-data` **volume**, not in any image — so an image-only probe reports
-it absent while the live container has it. Both guard conditions still fire
-correctly; just don't conclude from `repair=no` on an image that the live
-container lacks the script.
-
-Retained rather than deleted because a future chunk-based image would need it,
-and the guards now make it inert instead of harmful. If the deploy path stays
-source-based, deleting rung 4 outright is the honest simplification.
+it absent while the live container has it. The volume file is left in place;
+nothing calls it now.
 
 **3. Circuit breaker (`~/.9router/.patch-breaker`) — weakest, keep last.**
 Caps retries per signature. Insufficient alone: its signature embeds the image
