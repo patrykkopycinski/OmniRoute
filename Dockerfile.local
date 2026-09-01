@@ -1,0 +1,69 @@
+# Local build Dockerfile — uses pre-built .build/next/standalone output
+# Skips the builder stage entirely (npm ci + next build takes 15+ min in Docker)
+FROM node:24-trixie-slim AS base
+
+RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=shared \
+  --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists,sharing=shared \
+  apt-get update \
+  && apt-get upgrade -y \
+  && apt-get install -y --no-install-recommends libsecret-1-0 ca-certificates python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=20128
+ENV HOSTNAME=0.0.0.0
+ENV OMNIROUTE_MEMORY_MB=1024
+ENV NODE_OPTIONS="--max-old-space-size=${OMNIROUTE_MEMORY_MB}"
+ENV DATA_DIR=/app/data
+
+RUN mkdir -p /app/data
+
+# Copy the pre-built standalone output (includes .next, node_modules, migrations, etc.)
+COPY .build/next/standalone ./
+
+# better-sqlite3 native binding: the host's compiled build/ dir is
+# darwin-arm64 (macOS), not linux — copying it verbatim into this
+# linux/arm64 container makes better-sqlite3 fail to load at runtime
+# ("Could not locate the bindings file") and every DB call throws
+# "Database closed", 500ing the whole app. Copy the package SOURCE only
+# (excluding the host's prebuilt native binary) and rebuild it for the
+# container's actual platform.
+COPY node_modules/better-sqlite3/package.json ./node_modules/better-sqlite3/package.json
+COPY node_modules/better-sqlite3/binding.gyp ./node_modules/better-sqlite3/binding.gyp
+COPY node_modules/better-sqlite3/lib ./node_modules/better-sqlite3/lib
+COPY node_modules/better-sqlite3/src ./node_modules/better-sqlite3/src
+COPY node_modules/better-sqlite3/deps ./node_modules/better-sqlite3/deps
+# better-sqlite3 >=13 declares a `node-addon-api` ^8 dependency and its
+# binding.gyp resolves the include dir via
+# `node -p "require('node-addon-api').include"`. npm installs that as a NESTED
+# copy under better-sqlite3/node_modules (the hoisted root copy is an older 4.x
+# pinned by another package), so it must be copied explicitly — otherwise the
+# rebuild below dies with "Cannot find module 'node-addon-api'".
+COPY node_modules/better-sqlite3/node_modules ./node_modules/better-sqlite3/node_modules
+# node-gyp isn't a global CLI in this image; `npx` resolves npm's own bundled
+# copy (deterministic, ships with node:24, no extra install/network fetch).
+RUN cd node_modules/better-sqlite3 && npx --yes node-gyp rebuild --release
+
+# Healthcheck
+COPY scripts/dev/healthcheck.mjs ./healthcheck.mjs
+
+# Migrations
+ENV OMNIROUTE_MIGRATIONS_DIR=/app/migrations
+
+# Permission check script
+COPY scripts/check-permissions.sh /tmp/check-permissions.sh
+
+RUN chown -R node:node /app
+
+EXPOSE 20128
+
+USER node
+
+ENTRYPOINT ["/tmp/check-permissions.sh"]
+
+HEALTHCHECK --interval=30s --timeout=15s --start-period=15s --retries=5 \
+  CMD ["node", "healthcheck.mjs"]
+
+CMD ["node", "dev/run-standalone.mjs"]
