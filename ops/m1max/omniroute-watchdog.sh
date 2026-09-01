@@ -8,9 +8,9 @@
 #      does NOT save you here; this is what actually took the gateway down).
 #   2. Container stopped/missing.
 #   3. Container up but HTTP dead (hung process, port not serving).
-#   4. Chunk compat patches missing (only happens after an image recreate —
-#      they survive a plain stop/start — but re-applying is idempotent and
-#      cheap, and a gateway without them silently breaks kiro/github/oauth).
+#   4. (removed 2026-09-01) Chunk compat patches — see the Rung 4 note below.
+#      Every image on this host runs TS source, so the chunk tree it patched
+#      is never loaded; it only restarted healthy containers.
 #
 # Idempotent and quiet: logs only when it acts, so the log is a record of
 # real incidents rather than a heartbeat spam file.
@@ -220,115 +220,21 @@ elif host_path_ok; then
   fi
 fi
 
-# --- Rung 4 opt-out: source-based images -------------------------------
-# OMNIROUTE_SOURCE_BASED_IMAGE_GUARD
-# Images built from Dockerfile.local ship app code as TS SOURCE at
-# /app/open-sse/*.ts; Next chunks are stale build artifacts that are never
-# executed. Chunk-marker greps therefore can NEVER be satisfied on these
-# images -> reapply patches 0 chunks -> unconditional restart loop, and the
-# breaker signature embeds the image tag so every new tag resets it.
-# If the cursor fixes are present in the TS source, skip rung 4 entirely.
-SKIP_RUNG4=0
-# Generic source-based-image detection. Do NOT key on any single marker string:
-# markers come and go as fixes land upstream. Ask the structural question
-# instead -- does this image execute TS source rather than the chunk tree?
-# Dockerfile.local images run dev/run-standalone.mjs over /app/open-sse/*.ts,
-# so the chunks under /app/.build are inert build artifacts and patching them
-# is a no-op forever.
-if docker exec "$CONTAINER" sh -c '[ -f /app/open-sse/executors/cursor.ts ]' 2>/dev/null; then
-  SKIP_RUNG4=1
-fi
-# No repair tool present => nothing rung 4 can ever do.
-if ! docker exec "$CONTAINER" sh -c '[ -f /app/data/reapply-compat-patches.js ]' 2>/dev/null; then
-  SKIP_RUNG4=1
-fi
-
-# --- Rung 4: compat chunk patches ---------------------------------------
-# Wiped by an image recreate. Without them kiro/github/oauth-reloc silently
-# regress, so treat a missing patch as an incident and re-apply.
-if healthy && [ "$SKIP_RUNG4" -eq 0 ]; then
-  # cursorkv: Fix 4 makes the cursor executor stop treating a kv_server_message
-  # (blob-store side channel) frame as terminal. Without it, any cursor turn
-  # streaming >~2.5K chars of text is truncated mid-generation, which surfaces as
-  # "the agent stops after a single message". kvleak is the inverse assertion:
-  # zero chunks may still carry the terminal assignment.
-  counts=$(docker exec "$CONTAINER" sh -c \
-    'cd /app/.build/next/server/chunks 2>/dev/null && echo "$(grep -l "__mv=" *.js 2>/dev/null | wc -l) $(grep -l "__sid=" *.js 2>/dev/null | wc -l) $(grep -l "return _n!==\"web_search\"" *.js 2>/dev/null | wc -l) $(grep -l "__ORKVFIX" *.js 2>/dev/null | wc -l) $(grep -l "endReason=\"kv_after_text\"" *.js 2>/dev/null | wc -l)"' \
-    2>/dev/null | tr -d '\r' | tail -1)
-  reloc=$(echo "$counts" | awk '{print $1+0}')
-  kiro=$(echo "$counts" | awk '{print $2+0}')
-  gh=$(echo "$counts" | awk '{print $3+0}')
-  cursorkv=$(echo "$counts" | awk '{print $4+0}')
-  kvleak=$(echo "$counts" | awk '{print $5+0}')
-
-  if [ "$reloc" -eq 0 ] || [ "$kiro" -eq 0 ] || [ "$gh" -eq 0 ] || [ "$cursorkv" -eq 0 ] || [ "$kvleak" -ne 0 ]; then
-    # --- circuit breaker -------------------------------------------------
-    # A missing marker does NOT always mean a missing fix. When a fix lands
-    # upstream the marker string disappears for good (v3851-c661e1c81 ships
-    # the cursor kv fix model-gated as x.Ut(b.model), so cursorkv/kvleak can
-    # never satisfy this check and reapply patches 0 chunks). Without a
-    # breaker that is an infinite restart loop: 218 restarts / 85s apart on
-    # 2026-09-01 before this guard existed.
-    #
-    # Retry only while retrying still changes something. The signature is the
-    # running image plus the measured counts; two ineffective attempts against
-    # the same signature trip the breaker until the image or counts move.
-    BREAKER="${HOME}/.9router/.patch-breaker"
-    mkdir -p "$(dirname "$BREAKER")"
-    running_image=$(docker inspect "$CONTAINER" --format '{{.Config.Image}}' 2>/dev/null | tr -d '\r')
-    sig="${running_image}:${reloc}:${kiro}:${gh}:${cursorkv}:${kvleak}"
-    prev_sig=$(awk 'NR==1{print $1}' "$BREAKER" 2>/dev/null || echo "")
-    prev_n=$(awk 'NR==1{print $2+0}' "$BREAKER" 2>/dev/null || echo 0)
-    if [ "$sig" = "$prev_sig" ]; then
-      attempts=$prev_n
-    else
-      attempts=0
-    fi
-
-    if [ "$attempts" -ge 2 ]; then
-      # Tripped. Log only on the transition so this stays an incident log.
-      if [ "$attempts" -eq 2 ]; then
-        log "[patch] BREAKER TRIPPED — 2 ineffective re-applies for sig ${sig}; markers absent but reapply patches 0 chunks (fix likely upstream in this image). Not restarting again until image or counts change. Verify with: docker exec ${CONTAINER} sh -c 'cd /app/.build/next/server/chunks && grep -l kvAfterTextSeen *.js'"
-        echo "$sig $((attempts + 1))" > "$BREAKER"
-      fi
-    else
-      log "[patch] missing (reloc=$reloc kiro=$kiro gh=$gh cursorkv=$cursorkv kvleak=$kvleak) — re-applying compat patches (attempt $((attempts + 1))/2)"
-      # RUNG4_EFFECTIVE_REPAIR_GUARD
-      # Capture the repair's own report and restart ONLY if it changed bytes.
-      # Invariant: a repair that patched 0 chunks cannot be fixed by a restart,
-      # so restarting is pure damage (it drops in-flight requests and, before
-      # this guard, looped forever). This holds regardless of which markers
-      # exist, which image runs, or what lands upstream next -- unlike the
-      # breaker below, whose signature embeds the image tag and therefore
-      # resets on every deploy.
-      reapply_out=$(docker exec -u root "$CONTAINER" node /app/data/reapply-compat-patches.js 2>&1)
-      printf '%s\n' "$reapply_out" >>"$LOG"
-      patched_total=$(printf '%s' "$reapply_out" \
-        | grep -oE 'patched: *[0-9]+' | grep -oE '[0-9]+' \
-        | awk '{t+=$1} END {print t+0}')
-      if [ "${patched_total:-0}" -eq 0 ]; then
-        log "[patch] repair changed 0 chunks — NOT restarting (restart cannot fix what the repair cannot reach). Marking signature exhausted."
-        echo "$sig 99" > "$BREAKER"
-        exit 0
-      fi
-      log "[patch] repair changed ${patched_total} chunk(s) — restarting to load them"
-      docker restart "$CONTAINER" >/dev/null 2>&1
-      for _ in $(seq 1 30); do
-        sleep 2
-        healthy && break
-      done
-      echo "$sig $((attempts + 1))" > "$BREAKER"
-      log "[patch] re-applied and container restarted"
-    fi
-  else
-    # Patches present: clear any tripped breaker so a future real regression
-    # gets its full retry budget back.
-    BREAKER="${HOME}/.9router/.patch-breaker"
-    if [ -f "$BREAKER" ]; then
-      log "[patch] all markers present — clearing breaker state"
-      rm -f "$BREAKER"
-    fi
-  fi
-fi
-
+# --- Rung 4 (compat chunk patches): REMOVED 2026-09-01 ------------------
+# Rung 4 re-applied patches to minified Turbopack chunks under
+# /app/.build/next/server/chunks/ and restarted the container to load them.
+#
+# Every OmniRoute image on this host is built from Dockerfile.local and runs
+# `node dev/run-standalone.mjs` over TS SOURCE at /app/open-sse/*.ts. The
+# 12,317 chunk files exist but are NEVER loaded, so the rung patched dead
+# bytes and then restarted to 'apply' changes that could not take effect.
+#
+# It caused two loops against HEALTHY containers, both with RestartCount
+# stuck at 0 (docker restart is not a crash): 218 restarts / 85s apart when
+# a marker vanished upstream, then every ~60-90s after deploying
+# v3851-cursorfix-1945cc631.
+#
+# Restore from git history if a chunk-based image is ever deployed again;
+# the removed block carried an effective-repair guard (restart only when the
+# repair reports patched > 0) that must come back with it.
 exit 0
