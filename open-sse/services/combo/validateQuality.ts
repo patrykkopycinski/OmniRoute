@@ -585,12 +585,31 @@ export async function validateResponseQuality(
       ) {
         return { valid: false, reason: "stream locked or disturbed" };
       }
-      // Other read errors — pass through (stream readiness timeout will catch truly broken streams)
+      // Live 2026-08-19: Cursor composer returns HTTP 200 + empty SSE, then
+      // driveH2 rejects with "cursor-agent stream timed out". Passing that
+      // read error through committed the dead stream and never tried Claude.
+      // A stream that dies before any token / terminator is a hop failure.
+      if (!anyContentFound && !sse.hasContentBlock && !sawTerminator) {
+        log.warn?.(
+          "COMBO",
+          `Streaming response aborted before content (${errMsg}) — marking as invalid for combo failover`
+        );
+        return { valid: false, reason: `streaming aborted before content: ${errMsg}` };
+      }
+      // Tokens already started — client-facing stream is committed. Leave the
+      // rest to the stream-readiness / idle timeout.
       return { valid: true };
     }
   }
 
   const contentType = response.headers.get("content-type") || "";
+  // Live cheap 502 (2026-08-19): OpenRouter DeepSeek returns 200 text/event-stream
+  // that starts with `: keep-alive`. The non-streaming JSON branch then JSON.parse
+  // fails and rejects it as "not valid JSON" because the old prefix check only
+  // accepted bodies that start with `data:` / `event:`.
+  if (contentType.includes("text/event-stream")) {
+    return { valid: true };
+  }
   if (!contentType.includes("application/json") && !contentType.includes("text/")) {
     return { valid: true };
   }
