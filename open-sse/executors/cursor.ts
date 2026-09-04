@@ -96,6 +96,7 @@ import {
   type ClassifiedCursorError,
 } from "./cursor/cursorErrors.ts";
 import { getActiveSyncedCatalog } from "../../src/lib/db/models/activeSyncedCatalog.ts";
+import { recoverKimiToolCallNarration } from "../utils/kimiToolCallNarration.ts";
 // Composer helpers re-exported for external importers (tests).
 export {
   isComposerModel,
@@ -1680,6 +1681,34 @@ export class CursorExecutor extends BaseExecutor {
       }
     }
 
+    // Kimi narration fallback: recover a tool call that the model emitted as
+    // flattened-history narration text (with native delimiter tail) instead of
+    // a structured call. Runs only when nothing structured was produced yet.
+    if (ctx.toolCalls.length === 0 && ctx.totalText) {
+      const recovered = recoverKimiToolCallNarration(ctx.totalText);
+      if (recovered && recovered.toolCalls.length > 0) {
+        ctx.totalText = recovered.content;
+        for (const tc of recovered.toolCalls) {
+          const toolCallIndex = ctx.emittedToolCallIndex++;
+          ctx.toolCalls.push({
+            id: tc.id,
+            name: tc.function.name,
+            argumentsJson: tc.function.arguments,
+          });
+          emitChunk(ctx, {
+            tool_calls: [
+              {
+                index: toolCallIndex,
+                id: tc.id,
+                type: "function",
+                function: { name: tc.function.name, arguments: tc.function.arguments },
+              },
+            ],
+          });
+        }
+      }
+    }
+
     // OpenAI finish_reason: "tool_calls" if the model invoked any declared
     // tool, else "stop". A turn with mixed text + tool_calls finishes with
     // "tool_calls" (the tool calls are the actionable signal for the client).
@@ -1741,6 +1770,22 @@ export class CursorExecutor extends BaseExecutor {
         ctx.composerInlineToolCallsEmitted = true;
         ctx.totalText = parsed.content;
         for (const tc of parsed.toolCalls) {
+          ctx.toolCalls.push({
+            id: tc.id,
+            name: tc.function.name,
+            argumentsJson: tc.function.arguments,
+          });
+        }
+      }
+    }
+
+    // Kimi narration fallback (non-streaming): recover a tool call emitted as
+    // flattened-history narration text + native delimiter tail.
+    if (ctx.toolCalls.length === 0 && ctx.totalText) {
+      const recovered = recoverKimiToolCallNarration(ctx.totalText);
+      if (recovered && recovered.toolCalls.length > 0) {
+        ctx.totalText = recovered.content;
+        for (const tc of recovered.toolCalls) {
           ctx.toolCalls.push({
             id: tc.id,
             name: tc.function.name,
