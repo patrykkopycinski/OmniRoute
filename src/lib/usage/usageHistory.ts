@@ -45,6 +45,7 @@ import {
 export type PendingRequestMetadata = {
   clientEndpoint?: string | null;
   clientRequest?: unknown;
+  payloadRuleDiff?: unknown;
   providerRequest?: unknown;
   providerUrl?: string | null;
   providerResponse?: unknown;
@@ -65,6 +66,7 @@ export type PendingRequestDetail = {
   startedAt: number;
   clientEndpoint?: string | null;
   clientRequest?: unknown;
+  payloadRuleDiff?: unknown;
   providerRequest?: unknown;
   providerUrl?: string | null;
   providerResponse?: unknown;
@@ -108,6 +110,9 @@ function normalizePendingMetadata(metadata?: PendingRequestMetadata): PendingReq
   }
   if (metadata.clientRequest !== undefined) {
     normalized.clientRequest = truncatePendingPreview(protectPayloadForLog(metadata.clientRequest));
+  }
+  if (metadata.payloadRuleDiff !== undefined) {
+    normalized.payloadRuleDiff = truncatePendingPreview(protectPayloadForLog(metadata.payloadRuleDiff));
   }
   if (metadata.providerRequest !== undefined) {
     normalized.providerRequest = truncatePendingPreview(

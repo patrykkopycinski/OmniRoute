@@ -38,6 +38,50 @@ export const payloadFilterRuleSchema = z
   })
   .strict();
 
+export const payloadTransformOpSchema = z
+  .object({
+    op: z.enum(["append", "prepend", "replace", "regex"]),
+    path: z.string().trim().min(1),
+    value: z.string().optional(),
+    search: z.string().optional(),
+    pattern: z.string().optional(),
+    flags: z
+      .string()
+      .trim()
+      .regex(/^[dgimsuvy]*$/, "Invalid regex flags")
+      .optional(),
+    replace: z.string().optional(),
+  })
+  .strict()
+  .superRefine((op, ctx) => {
+    if (op.op === "append" || op.op === "prepend") {
+      if (typeof op.value !== "string") {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "value is required for append/prepend", path: ["value"] });
+      }
+    } else if (op.op === "replace") {
+      if (typeof op.search !== "string" || typeof op.replace !== "string") {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "search and replace are required for replace", path: ["search"] });
+      }
+    } else if (op.op === "regex") {
+      if (typeof op.pattern !== "string" || op.pattern.length === 0 || typeof op.replace !== "string") {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "pattern and replace are required for regex", path: ["pattern"] });
+      } else {
+        try {
+          void new RegExp(op.pattern, op.flags ?? "");
+        } catch {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid regex pattern", path: ["pattern"] });
+        }
+      }
+    }
+  });
+
+export const payloadTransformRuleSchema = z
+  .object({
+    models: z.array(payloadRuleModelSpecSchema).min(1),
+    ops: z.array(payloadTransformOpSchema).min(1),
+  })
+  .strict();
+
 export const updatePayloadRulesSchema = z
   .object({
     default: z.array(payloadMutationRuleSchema).optional(),
@@ -45,6 +89,7 @@ export const updatePayloadRulesSchema = z
     filter: z.array(payloadFilterRuleSchema).optional(),
     defaultRaw: z.array(payloadMutationRuleSchema).optional(),
     "default-raw": z.array(payloadMutationRuleSchema).optional(),
+    transform: z.array(payloadTransformRuleSchema).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -53,7 +98,8 @@ export const updatePayloadRulesSchema = z
       value.override === undefined &&
       value.filter === undefined &&
       value.defaultRaw === undefined &&
-      value["default-raw"] === undefined
+      value["default-raw"] === undefined &&
+      value.transform === undefined
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

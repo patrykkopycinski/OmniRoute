@@ -19,15 +19,27 @@ export type PayloadFilterRule = {
   params: string[];
 };
 
+export type PayloadTransformOp =
+  | { op: "append"; path: string; value: string }
+  | { op: "prepend"; path: string; value: string }
+  | { op: "replace"; path: string; search: string; replace: string }
+  | { op: "regex"; path: string; pattern: string; flags?: string; replace: string };
+
+export type PayloadTransformRule = {
+  models: PayloadRuleModelSpec[];
+  ops: PayloadTransformOp[];
+};
+
 export type PayloadRulesConfig = {
   default: PayloadMutationRule[];
   override: PayloadMutationRule[];
   filter: PayloadFilterRule[];
   defaultRaw: PayloadMutationRule[];
+  transform: PayloadTransformRule[];
 };
 
 export type AppliedPayloadRule = {
-  type: "default" | "override" | "filter" | "default-raw";
+  type: "default" | "override" | "filter" | "default-raw" | "transform";
   path: string;
   value?: unknown;
 };
@@ -37,7 +49,11 @@ const DEFAULT_PAYLOAD_RULES_CONFIG: PayloadRulesConfig = {
   override: [],
   filter: [],
   defaultRaw: [],
+  transform: [],
 };
+
+const TRANSFORM_OP_NAMES = new Set(["append", "prepend", "replace", "regex"]);
+const TRANSFORM_REGEX_FLAGS = /^[dgimsuvy]*$/;
 
 const MIN_FILE_CHECK_INTERVAL_MS = 1_000;
 const DEFAULT_FILE_CHECK_INTERVAL_MS = 5_000;
@@ -80,6 +96,10 @@ function clonePayloadRulesConfig(config: PayloadRulesConfig): PayloadRulesConfig
       models: rule.models.map((model) => ({ ...model })),
       params: cloneValue(rule.params),
     })),
+    transform: config.transform.map((rule) => ({
+      models: rule.models.map((model) => ({ ...model })),
+      ops: rule.ops.map((op) => ({ ...op })),
+    })),
   };
 }
 
@@ -118,6 +138,47 @@ function normalizeFilterRules(value: unknown): PayloadFilterRule[] {
     .filter((item): item is PayloadFilterRule => !!item);
 }
 
+function normalizeTransformOp(value: unknown): PayloadTransformOp | null {
+  const record = toRecord(value);
+  const op = typeof record.op === "string" ? record.op.trim() : "";
+  const path = typeof record.path === "string" ? record.path.trim() : "";
+  if (!TRANSFORM_OP_NAMES.has(op) || !path) return null;
+
+  if (op === "append" || op === "prepend") {
+    if (typeof record.value !== "string") return null;
+    return { op, path, value: record.value } as PayloadTransformOp;
+  }
+  if (op === "replace") {
+    if (typeof record.search !== "string" || typeof record.replace !== "string") return null;
+    return { op, path, search: record.search, replace: record.replace } as PayloadTransformOp;
+  }
+  // op === "regex": fail closed on invalid patterns or flags.
+  const pattern = typeof record.pattern === "string" ? record.pattern : "";
+  const flags = typeof record.flags === "string" ? record.flags : "";
+  const replace = typeof record.replace === "string" ? record.replace : "";
+  if (!pattern || typeof record.replace !== "string") return null;
+  if (!TRANSFORM_REGEX_FLAGS.test(flags)) return null;
+  try {
+    void new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+  return { op, path, pattern, ...(flags ? { flags } : {}), replace } as PayloadTransformOp;
+}
+
+function normalizeTransformRules(value: unknown): PayloadTransformRule[] {
+  return toArray<JsonRecord>(value)
+    .map((item) => {
+      const models = normalizeModelSpecs(item?.models);
+      const ops = toArray<unknown>(item?.ops)
+        .map(normalizeTransformOp)
+        .filter((entry): entry is PayloadTransformOp => !!entry);
+      if (models.length === 0 || ops.length === 0) return null;
+      return { models, ops };
+    })
+    .filter((item): item is PayloadTransformRule => !!item);
+}
+
 export function normalizePayloadRulesConfig(value: unknown): PayloadRulesConfig {
   const record = toRecord(value);
   const defaultRawLegacy = toArray<JsonRecord>(record["default-raw"]);
@@ -128,6 +189,7 @@ export function normalizePayloadRulesConfig(value: unknown): PayloadRulesConfig 
     override: normalizeMutationRules(record.override),
     filter: normalizeFilterRules(record.filter),
     defaultRaw: normalizeMutationRules(defaultRaw),
+    transform: normalizeTransformRules(record.transform),
   };
 }
 
@@ -406,6 +468,47 @@ export function resolvePayloadRuleProtocols({
   return [...protocols];
 }
 
+const TRANSFORM_SNIPPET_LIMIT = 200;
+
+function snippetAroundChange(before: string, after: string): { beforeSnippet: string; afterSnippet: string } | null {
+  // Find first differing index, then back off for context.
+  let start = 0;
+  const minLen = Math.min(before.length, after.length);
+  while (start < minLen && before[start] === after[start]) start++;
+  // Back off for context, including the pure-append case where the first
+  // difference sits at (or beyond) the end of the shorter string.
+  start = Math.max(0, start - 40);
+  return {
+    beforeSnippet: before.slice(start, start + TRANSFORM_SNIPPET_LIMIT),
+    afterSnippet: after.slice(start, start + TRANSFORM_SNIPPET_LIMIT),
+  };
+}
+
+function applyTransformOp(
+  payload: JsonRecord,
+  op: PayloadTransformOp
+): { path: string; before: number; after: number; beforeSnippet: string; afterSnippet: string } | null {
+  const current = getValueAtPath(payload, op.path);
+  if (typeof current !== "string") return null;
+
+  let next: string;
+  if (op.op === "append") next = current + op.value;
+  else if (op.op === "prepend") next = op.value + current;
+  else if (op.op === "replace") next = current.replace(op.search, op.replace);
+  else next = current.replace(new RegExp(op.pattern, op.flags ?? ""), op.replace);
+
+  if (next === current) return null;
+  setValueAtPath(payload, op.path, next);
+  const snippet = snippetAroundChange(current, next);
+  return {
+    path: op.path,
+    before: current.length,
+    after: next.length,
+    beforeSnippet: snippet?.beforeSnippet ?? "",
+    afterSnippet: snippet?.afterSnippet ?? "",
+  };
+}
+
 export function applyPayloadRules(
   payload: JsonRecord,
   model: string,
@@ -415,6 +518,8 @@ export function applyPayloadRules(
   const normalizedPayload = cloneValue(payload);
   const protocols = toPayloadRuleProtocols(protocol);
   const applied: AppliedPayloadRule[] = [];
+  // Older persisted configs predate the transform rule type.
+  const transformRules = rules.transform ?? [];
 
   for (const rule of rules.default) {
     if (!matchesRule(model, protocols, rule.models)) continue;
@@ -440,6 +545,19 @@ export function applyPayloadRules(
     for (const [pathValue, rawValue] of Object.entries(rule.params)) {
       setValueAtPath(normalizedPayload, pathValue, rawValue);
       applied.push({ type: "override", path: pathValue, value: cloneValue(rawValue) });
+    }
+  }
+
+  for (const rule of transformRules) {
+    if (!matchesRule(model, protocols, rule.models)) continue;
+    for (const op of rule.ops) {
+      const result = applyTransformOp(normalizedPayload, op);
+      if (!result) continue;
+      applied.push({
+        type: "transform",
+        path: result.path,
+        value: { op: op.op, before: result.before, after: result.after, beforeSnippet: result.beforeSnippet, afterSnippet: result.afterSnippet },
+      });
     }
   }
 

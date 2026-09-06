@@ -67,6 +67,7 @@ test("payload rules route returns the neutral config by default", async () => {
     override: [],
     filter: [],
     defaultRaw: [],
+    transform: [],
   });
 });
 
@@ -99,6 +100,7 @@ test("payload rules route requires a dashboard session when management auth is e
     override: [],
     filter: [],
     defaultRaw: [],
+    transform: [],
   });
 });
 
@@ -150,6 +152,7 @@ test("payload rules route persists normalized config and hot reloads the runtime
     override: requestBody.override,
     filter: requestBody.filter,
     defaultRaw: requestBody["default-raw"],
+    transform: [],
   });
   assert.deepEqual(settings.payloadRules, body);
   assert.deepEqual(runtimeConfig, body);
@@ -190,5 +193,52 @@ test("payload rules route rejects malformed and schema-invalid payloads", async 
     override: [],
     filter: [],
     defaultRaw: [],
+    transform: [],
   });
+});
+
+test("payload rules route accepts transform rules via PUT", async () => {
+  await enableManagementAuth();
+  const response = await route.PUT(
+    await makeManagementSessionRequest("http://localhost/api/settings/payload-rules", {
+      method: "PUT",
+      body: {
+        transform: [
+          {
+            models: [{ name: "smoke-*" }],
+            ops: [{ op: "append", path: "messages.0.content", value: " ok" }],
+          },
+        ],
+      },
+    })
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { transform: Array<{ ops: Array<{ op: string }> }> };
+  assert.equal(body.transform.length, 1);
+  assert.equal(body.transform[0].ops[0].op, "append");
+
+  const badRegex = await route.PUT(
+    await makeManagementSessionRequest("http://localhost/api/settings/payload-rules", {
+      method: "PUT",
+      body: {
+        transform: [
+          { models: [{ name: "x" }], ops: [{ op: "regex", path: "a", pattern: "(", replace: "y" }] },
+        ],
+      },
+    })
+  );
+  assert.equal(badRegex.status, 400);
+});
+
+test("payload rules route rejects transform rules with invalid ops", async () => {
+  await enableManagementAuth();
+  const response = await route.PUT(
+    await makeManagementSessionRequest("http://localhost/api/settings/payload-rules", {
+      method: "PUT",
+      body: {
+        transform: [{ models: [{ name: "x" }], ops: [{ op: "append", path: "a.b" }] }],
+      },
+    })
+  );
+  assert.equal(response.status, 400);
 });
