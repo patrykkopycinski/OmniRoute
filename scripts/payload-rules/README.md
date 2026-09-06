@@ -33,6 +33,29 @@ Therefore:
 4. **Rules are frozen once live**: hot-path behavior is deterministic and
    diffable; every application is traceable in the call log.
 
+## Matching: resolved model id, not the alias
+
+Rules match the **resolved** model id, not the alias or combo name the client
+requested. Matching happens after routing, so by the time rules run the
+`provider/` prefix is gone and combo names have already fanned out.
+
+```jsonc
+// never fires — 'qwen38a100/...' is an alias, resolved before rules run
+{ "models": [{ "name": "qwen38a100/qwen3.8-27b" }] }
+
+// fires
+{ "models": [{ "name": "qwen3.8-27b" }] }
+```
+
+The same applies to combo names (`main`, `cheap`, ...): scope rules to the
+model ids the combo fans out to, not the combo itself.
+
+An alias-scoped rule fails **silently** — no error, no log line, the transform
+just never applies. The settings UI flags patterns that carry a provider prefix
+or name no known model (`src/lib/payloadRules/transformPatternWarnings.ts`), but
+the warning is advisory: a pattern targeting a model this build's registry does
+not know (custom provider, newly released model) is legal and still saved.
+
 ## Golden set format
 
 ```json

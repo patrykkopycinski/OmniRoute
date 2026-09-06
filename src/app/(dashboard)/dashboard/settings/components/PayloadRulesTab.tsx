@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Card, Button } from "@/shared/components";
+import {
+  findInertTransformPatterns,
+  type TransformRuleLike,
+} from "@/lib/payloadRules/transformPatternWarnings";
 
 const EMPTY_PAYLOAD_RULES_TEMPLATE = {
   default: [],
@@ -103,6 +107,16 @@ export default function PayloadRulesTab() {
       defaultRaw: getRuleSectionCount(source, ["defaultRaw", "default-raw"]),
       transform: getRuleSectionCount(source, ["transform"]),
     };
+  }, [parsedEditor.value]);
+
+  // Transform rules match the RESOLVED model id, never the requested alias or
+  // combo name, so an alias-scoped pattern is silently inert. Surface that
+  // before the operator saves and assumes the rule is live.
+  const inertPatterns = useMemo(() => {
+    const source = parsedEditor.value;
+    const transform = source?.transform;
+    if (!Array.isArray(transform)) return [];
+    return findInertTransformPatterns(transform as TransformRuleLike[]);
   }, [parsedEditor.value]);
 
   const applyConfigResult = useCallback((result: { text?: string; error?: string }) => {
@@ -225,6 +239,28 @@ export default function PayloadRulesTab() {
             {t("payloadRuleTransformTitle")}: {summary.transform}
           </span>
         </div>
+
+        {inertPatterns.length > 0 && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-sm bg-amber-500/10 text-amber-700 dark:text-amber-400">
+            <span className="material-symbols-outlined text-[16px] mt-0.5" aria-hidden="true">
+              warning
+            </span>
+            <div>
+              <p className="font-medium">{t("payloadRuleInertPatternTitle")}</p>
+              <p className="mt-1 text-xs">{t("payloadRuleInertPatternDesc")}</p>
+              <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                {inertPatterns.map((entry) => (
+                  <li
+                    key={entry.pattern}
+                    className="rounded border border-amber-500/30 px-1.5 py-0.5 font-mono text-xs"
+                  >
+                    {entry.pattern}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
 
         {message && (
           <div
