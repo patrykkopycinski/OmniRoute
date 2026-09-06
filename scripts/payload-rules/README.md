@@ -6,13 +6,13 @@ policy and the tooling that enforces it.
 
 ## What ships
 
-| Layer | Where | Behavior |
-|---|---|---|
+| Layer                 | Where                               | Behavior                                                                                                                                                    |
+| --------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `transform` rule type | `open-sse/services/payloadRules.ts` | `append`/`prepend`/`replace`/`regex` ops on dotted string paths, wildcard model match, protocol scoping. Off by default: no rules = byte-identical traffic. |
-| Trace diff | call-log `payloadRuleDiff` | Every applied transform persists bounded before/after snippets + lengths to the call log; visible in the logs detail UI and API. |
-| Dashboard | Settings → Payload Rules | JSON editor round-trips the full config including `transform`; summary chips + rule cards included. |
-| Golden gate | `scripts/payload-rules/gate.mjs` | Deterministic replay of a candidate rule set against a golden prompt set. Fails on: payload mismatch, invalid rules, zero coverage (rule matched nothing). |
-| LLM suggester | `scripts/payload-rules/suggest.mjs` | Offline proposal of rules by an LLM. Output has zero authority: the candidate MUST pass the golden gate before promotion. Never touches live config. |
+| Trace diff            | call-log `payloadRuleDiff`          | Every applied transform persists bounded before/after snippets + lengths to the call log; visible in the logs detail UI and API.                            |
+| Dashboard             | Settings → Payload Rules            | JSON editor round-trips the full config including `transform`; summary chips + rule cards included.                                                         |
+| Golden gate           | `scripts/payload-rules/gate.mjs`    | Deterministic replay of a candidate rule set against a golden prompt set. Fails on: payload mismatch, invalid rules, zero coverage (rule matched nothing).  |
+| LLM suggester         | `scripts/payload-rules/suggest.mjs` | Offline proposal of rules by an LLM. Output has zero authority: the candidate MUST pass the golden gate before promotion. Never touches live config.        |
 
 ## Policy (research-backed)
 
