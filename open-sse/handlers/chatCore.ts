@@ -3048,6 +3048,14 @@ export async function handleChatCore({
         log,
         bypassDefaultToolLimit: isOpencodeClient,
         isOpencodeClient,
+        onAppliedRules: (applied) => {
+          try {
+            reqLogger.logPayloadRuleDiff(applied);
+            updatePendingScope(pendingScope, { payloadRuleDiff: applied });
+          } catch {
+            // observability hook must never break the request path
+          }
+        },
       });
 
       updatePendingScope(pendingScope, {

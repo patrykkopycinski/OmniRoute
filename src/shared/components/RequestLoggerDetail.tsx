@@ -387,6 +387,7 @@ export default function RequestLoggerDetail({
         ["clientRawRequest", t("payload.clientRawRequest")],
         ["clientRequest", t("payload.clientRequest")],
         ["openaiRequest", t("payload.openaiRequest")],
+        ["payloadRuleDiff", t("payload.payloadRuleDiff", { defaultValue: "Payload rule diff" })],
         ["providerRequest", t("payload.providerRequest")],
         ["providerResponse", t("payload.providerResponse")],
         ["clientResponse", t("payload.clientResponse")],

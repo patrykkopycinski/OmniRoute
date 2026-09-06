@@ -1,0 +1,19 @@
+{
+  "_comment": "Golden prompt set for payload transform rules. Each case is replayed deterministically by scripts/payload-rules/gate.mjs; expect must equal the payload AFTER rules apply. A rule matching zero cases fails coverage.",
+  "cases": [
+    {
+      "name": "schema-suffix-weak-model",
+      "model": "test-weak-model-1",
+      "protocol": "openai",
+      "payload": { "messages": [{ "role": "user", "content": "Extract fields as JSON." }] },
+      "expect": { "messages": [{ "role": "user", "content": "Extract fields as JSON." }] }
+    },
+    {
+      "name": "untouched-strong-model",
+      "model": "gpt-5.4",
+      "protocol": "openai",
+      "payload": { "messages": [{ "role": "user", "content": "Extract fields as JSON." }] },
+      "expect": { "messages": [{ "role": "user", "content": "Extract fields as JSON." }] }
+    }
+  ]
+}

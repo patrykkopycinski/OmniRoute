@@ -19,6 +19,7 @@ export type RequestPipelinePayloads = {
   providerResponse?: JsonRecord;
   clientResponse?: JsonRecord;
   error?: JsonRecord;
+  payloadRuleDiff?: JsonRecord;
   streamChunks?: {
     provider?: string[];
     openai?: string[];
@@ -43,6 +44,7 @@ type RequestLogger = {
   logConvertedResponse: (body: unknown) => void;
   appendConvertedChunk: (chunk: string) => void;
   logError: (error: unknown, requestBody?: unknown) => void;
+  logPayloadRuleDiff: (entries: unknown[]) => void;
   getPipelinePayloads: () => RequestPipelinePayloads | null;
 };
 
@@ -379,6 +381,7 @@ export async function createRequestLogger(
       logConvertedResponse() {},
       appendConvertedChunk: chunkMethods.appendConvertedChunk,
       logError() {},
+      logPayloadRuleDiff() {},
       getPipelinePayloads() {
         return routeDecision ? { routeDecision } : null;
       },
@@ -446,6 +449,14 @@ export async function createRequestLogger(
         timestamp: new Date().toISOString(),
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         requestBody: cloneBoundedForLog(requestBody),
+      };
+    },
+
+    logPayloadRuleDiff(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) return;
+      payloads.payloadRuleDiff = {
+        timestamp: new Date().toISOString(),
+        entries: cloneBoundedForLog(entries) as unknown as JsonRecord,
       };
     },
 

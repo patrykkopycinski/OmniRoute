@@ -189,6 +189,7 @@ export async function prepareUpstreamBody(opts: {
   bypassDefaultToolLimit?: boolean;
   isOpencodeClient?: boolean;
   log?: LoggerLike;
+  onAppliedRules?: (applied: Array<{ type: string; path: string; value?: unknown }>) => void;
 }): Promise<Body> {
   const {
     translatedBody,
@@ -199,6 +200,7 @@ export async function prepareUpstreamBody(opts: {
     bypassDefaultToolLimit = false,
     isOpencodeClient = false,
     log,
+    onAppliedRules,
   } = opts;
 
   let bodyToSend: Body =
@@ -222,6 +224,7 @@ export async function prepareUpstreamBody(opts: {
       "PAYLOAD_RULES",
       `Applied ${payloadRuleResult.applied.length} rule(s) for ${payloadRuleModel} (${payloadRuleProtocols.join(", ")}): ${buildAppliedRulesSummary(payloadRuleResult.applied)}`
     );
+    onAppliedRules?.(payloadRuleResult.applied);
   }
 
   bodyToSend = sanitizeRequestForResolvedTarget(bodyToSend, {

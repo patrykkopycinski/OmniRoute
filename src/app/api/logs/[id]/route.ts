@@ -75,6 +75,7 @@ export async function GET(
       if (pendingRequestDetail) {
         const pipelinePayloads: any = {
           clientRequest: pendingRequestDetail.clientRequest ?? null,
+          payloadRuleDiff: pendingRequestDetail.payloadRuleDiff ?? null,
           providerRequest: pendingRequestDetail.providerRequest ?? null,
           providerResponse: pendingRequestDetail.providerResponse ?? null,
           clientResponse: pendingRequestDetail.clientResponse ?? null,
@@ -121,6 +122,7 @@ export async function GET(
         if (inMem) {
           const pipelinePayloads: any = {
             clientRequest: inMem.clientRequest ?? null,
+            payloadRuleDiff: inMem.payloadRuleDiff ?? null,
             providerRequest: inMem.providerRequest ?? null,
             providerResponse: inMem.providerResponse ?? null,
             clientResponse: inMem.clientResponse ?? null,

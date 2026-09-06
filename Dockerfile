@@ -119,7 +119,11 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,targe
   && (cd node_modules/better-sqlite3 \
       && node /usr/local/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js rebuild) \
   && node -e "require('better-sqlite3')(':memory:').close()" \
-  && node node_modules/tls-client-node/scripts/postinstall.js \
+  # bogdanfinn/tls-client v1.16.0 renamed the linux/darwin arm64 assets to the
+  # xgo- variant, so the pinned tls-client-node@0.2.0 postinstall 404s on
+  # "No release asset found". Pin 1.15.1, whose legacy asset names still exist,
+  # until tls-client-node ships a fixed resolver.
+  && TLS_CLIENT_VERSION=1.15.1 node node_modules/tls-client-node/scripts/postinstall.js \
   && (test -n "$(find node_modules/tls-client-node/bin -mindepth 1 -print -quit 2>/dev/null)" \
       || (echo "tls-client-node native binary missing after postinstall — GitHub API fetch likely rate-limited or failed (#7802)" >&2 && exit 1))
 
