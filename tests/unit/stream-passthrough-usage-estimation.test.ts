@@ -34,24 +34,6 @@ test("passthrough no fake: tool_only contentLength==0 -> no estimate (tool_calls
 
 import { createSSEStream } from "../../open-sse/utils/stream.ts";
 
-function collectSSE(stream: TransformStream<Uint8Array, Uint8Array>) {
-  return async (writable: WritableStream<Uint8Array>, readable: ReadableStream<Uint8Array>) => {
-    const chunks: string[] = [];
-    const decoder = new TextDecoder();
-    const reader = readable.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(decoder.decode(value, { stream: true }));
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    return chunks.join("");
-  };
-}
-
 function parseSSEUsage(sseText: string): unknown[] {
   return sseText
     .split("\n\n")
