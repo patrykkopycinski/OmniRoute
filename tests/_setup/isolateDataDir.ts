@@ -50,3 +50,13 @@ process.env.OMNIROUTE_SKIP_SYSTEM_TRUST = "1";
 // DNS-write guard: the suite must NEVER mutate /etc/hosts. Tests that exercise
 // the real MITM path call addDNSEntries(); this env var makes it a no-op.
 process.env.OMNIROUTE_SKIP_DNS_WRITE = "1";
+
+// Browser-spawn guard: the suite must NEVER launch a real Chrome/Edge. The Adobe
+// Firefly session warm (adobeFireflySession.ts::shouldWarm) spawns the SYSTEM
+// browser with --remote-debugging-port whenever a test reaches it without a valid
+// user JWT — which any mocked-fetch test does by construction. Cost when it fires:
+// ~9s of CDP wait per test, a ~2MB Chrome profile leaked under the temp DATA_DIR
+// (the exit hook races the browser's own children and loses), and an EDR alert on
+// developer machines for an off-screen browser opened with remote debugging.
+// `||=` so tests that genuinely cover the browser path can opt back in.
+process.env.ADOBE_FIREFLY_BROWSER_REFRESH ||= "0";
