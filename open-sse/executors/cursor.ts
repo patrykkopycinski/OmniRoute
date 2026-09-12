@@ -379,7 +379,13 @@ export function ctxProducedSignal(ctx: StreamCtx): boolean {
   return (
     ctx.receivedText ||
     ctx.thinkingText.length > 0 ||
-    ctx.toolCalls.length > 0 ||
+    // A tool call only counts as usable signal if it carried arguments. cursor
+    // truncates tool calls under load (finish_reason:"tool_calls" with
+    // arguments:"" and 0 completion tokens); treating a bare name as signal let
+    // that empty turn finalize into a clean 200 the quality gate passes, and the
+    // client then can't execute the argument-less call. Empty argumentsJson ===
+    // no usable content, so the hop fails over instead.
+    ctx.toolCalls.some((tc) => tc.argumentsJson && tc.argumentsJson.trim().length > 0) ||
     ctx.tokenDelta > 0
   );
 }

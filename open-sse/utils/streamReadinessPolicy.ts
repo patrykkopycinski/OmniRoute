@@ -116,13 +116,43 @@ function isExtendedThinkingModel(model?: string | null): boolean {
   // without matching unrelated ids that merely contain the word.
   return /-thinking(?:-|$)/.test(model.toLowerCase());
 }
+/**
+ * First-event ceiling for hang-prone stall models. cursor/kimi-k3-high is
+ * bimodal: it either emits its first SSE event within ~10-40s, or goes
+ * dead-silent and never emits (a queue/stall on Cursor's side — NOT a
+ * reasoning warm-up; the successful requests show no slow tail). A long
+ * readiness window therefore only lengthens the hang before the combo
+ * cascades to the next hop. Cap the window so the hop fast-fails instead of
+ * holding the request for minutes. ~2x the observed p95 first-event (~41s),
+ * far below the multi-minute hang.
+ */
+const HANG_PRONE_STALL_FIRST_EVENT_CAP_MS = 90_000;
+/**
+ * Keyed on provider+model, NOT the `-high` suffix: cursor's grok-4.6-high is
+ * a genuine slow-reasoning target that needs the LONG window, so it must not
+ * share this fast-fail rule. `model` may arrive with or without the provider
+ * prefix (`kimi-k3-high` vs `cursor/kimi-k3-high`), so accept both spellings.
+ */
+function isHangProneStallModel(provider?: string | null, model?: string | null): boolean {
+  const normalizedProvider = (provider || "").toLowerCase();
+  const normalizedModel = (model || "").toLowerCase();
+  return (
+    normalizedProvider === "cursor" &&
+    (normalizedModel === "kimi-k3-high" || normalizedModel === "cursor/kimi-k3-high")
+  );
+}
 
 export function resolveStreamReadinessTimeout(
   input: StreamReadinessPolicyInput
 ): StreamReadinessPolicyResult {
   const baseTimeoutMs = Math.max(0, Math.floor(input.baseTimeoutMs || 0));
   if (baseTimeoutMs <= 0) {
-    return { timeoutMs: baseTimeoutMs, baseTimeoutMs, maxTimeoutMs: baseTimeoutMs, reasons: ["disabled"] };
+    return {
+      timeoutMs: baseTimeoutMs,
+      baseTimeoutMs,
+      maxTimeoutMs: baseTimeoutMs,
+      reasons: ["disabled"],
+    };
   }
 
   const maxTimeoutMs = Math.max(baseTimeoutMs, input.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS);
@@ -193,6 +223,14 @@ export function resolveStreamReadinessTimeout(
   if (isClaudeFormatReasoningProvider(input.provider) && !codexHighReasoning && !extendedThinking) {
     timeoutMs += 30_000;
     reasons.push("claude_format_heavy_reasoning");
+  }
+
+  // Hang-prone stall models fast-fail: cap the readiness window BELOW the
+  // reasoning bumps so a silently-stalled upstream (never emits a first event)
+  // fails over quickly instead of consuming the full multi-minute window.
+  if (isHangProneStallModel(input.provider, input.model)) {
+    timeoutMs = Math.min(timeoutMs, HANG_PRONE_STALL_FIRST_EVENT_CAP_MS);
+    reasons.push("hang_prone_stall_fast_fail");
   }
 
   timeoutMs = Math.min(timeoutMs, maxTimeoutMs);
