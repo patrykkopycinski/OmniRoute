@@ -327,6 +327,59 @@ function bodyHasAnyCacheControl(body: ClaudeRequestBody): boolean {
   return false;
 }
 
+/**
+ * Prompt-cache rescue for the pure claude→claude passthrough branch.
+ *
+ * Marker-less Anthropic-format clients (Cursor, Hermes) ship zero cache
+ * breakpoints through passthrough, so the full prefix is re-billed uncached
+ * every turn. This injects the same breakpoints the standard heuristic would
+ * (system tail @1h, second-to-last user turn, last assistant turn) but ONLY
+ * when the body carries no cache_control anywhere.
+ *
+ * A client that manages its own markers (Claude Code) must stay byte-identical,
+ * so any existing marker — in system, message content, or tools — makes this a
+ * total no-op. Mutates and returns `body`.
+ */
+export function ensurePassthroughCacheBreakpoints(body: ClaudeRequestBody): ClaudeRequestBody {
+  if (!body || typeof body !== "object") return body;
+
+  // The client manages its own breakpoints — never supplement them.
+  if (bodyHasAnyCacheControl(body)) return body;
+
+  // System tail carries the long-lived prefix: 1h TTL, matching prepareClaudeRequest.
+  if (Array.isArray(body.system) && body.system.length > 0) {
+    const lastBlock = body.system[body.system.length - 1];
+    if (lastBlock && typeof lastBlock === "object") {
+      lastBlock.cache_control = { type: "ephemeral", ttl: "1h" };
+    }
+  }
+
+  if (!Array.isArray(body.messages) || body.messages.length === 0) return body;
+
+  // Normalize string content up front so marking always has a block to land on
+  // and downstream passes see a consistent shape.
+  for (const msg of body.messages) {
+    ensureMessageContentArray(msg);
+  }
+
+  // Cache the second-to-last user turn so the next turn reuses the prefix.
+  const userIndexes = body.messages.reduce<number[]>((indexes, msg, index) => {
+    if (msg?.role === "user") indexes.push(index);
+    return indexes;
+  }, []);
+  if (userIndexes.length >= 2) {
+    markMessageCacheControl(body.messages[userIndexes[userIndexes.length - 2]]);
+  }
+
+  // Cache the last assistant turn that actually has content.
+  for (let i = body.messages.length - 1; i >= 0; i--) {
+    const msg = body.messages[i];
+    if (msg?.role === "assistant" && markMessageCacheControl(msg)) break;
+  }
+
+  return body;
+}
+
 // Prepare request for Claude format endpoints
 // - Cleanup cache_control (unless preserveCacheControl=true for passthrough)
 // - Filter empty messages
