@@ -49,6 +49,18 @@ export function isClientAbortError(err) {
   // `Error: aborted` — an emitter-left 'error' event on any of these used to
   // kill the process (#fix-dev-server-aborted).
   if (e.name === "AbortError" && /abort/i.test(String(e.message))) return true;
+  // OmniRoute's own deliberate combo-dispatch abort reasons (see
+  // open-sse/services/combo/comboAbortReasons.ts). They surface as AbortError
+  // but their messages do not contain "abort", so the regex above misses them;
+  // classifying them as fatal killed the whole gateway on every hedge cancel
+  // during a client disconnect (memory-combo incident 2026-09-11/12).
+  if (
+    e.message === "hedge-cancelled" ||
+    e.message === "combo-per-model-timeout" ||
+    e.message === "request_signal_aborted"
+  ) {
+    return true;
+  }
   switch (e.code) {
     case "ERR_STREAM_PREMATURE_CLOSE":
     case "ECONNRESET":

@@ -336,7 +336,16 @@ export function createStreamController({
       if (deferUpstreamAbort) {
         completedToolHandoffDrain?.();
       } else {
-        abortController.abort(reason);
+        // #hedge-abort-crash: handleDisconnect can fire inside an AbortSignal
+        // event listener (clientAbortSignal -> handleClientAbort). A listener on
+        // abortController.signal may then throw synchronously (e.g. throwIfAborted
+        // on a sibling hedged target aborted with COMBO_HEDGE_CANCELLED_REASON),
+        // which would escape as an uncaughtException and kill the process.
+        try {
+          abortController.abort(reason);
+        } catch (err) {
+          console.error("[streamHandler] abort listener threw during handleDisconnect:", err);
+        }
       }
 
       onDisconnect?.({ reason, duration: Date.now() - startTime });
