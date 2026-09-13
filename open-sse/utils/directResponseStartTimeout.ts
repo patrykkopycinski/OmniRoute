@@ -1,8 +1,5 @@
 type DirectFetchOptions = RequestInit & { dispatcher?: unknown };
-type DirectFetch = (
-  input: RequestInfo | URL,
-  options: DirectFetchOptions
-) => Promise<Response>;
+type DirectFetch = (input: RequestInfo | URL, options: DirectFetchOptions) => Promise<Response>;
 
 const DEFAULT_DIRECT_HEADERS_TIMEOUT_MS = 30_000;
 const DIRECT_RESPONSE_START_TIMEOUT_CODE = "DIRECT_RESPONSE_START_TIMEOUT";
@@ -61,10 +58,20 @@ export async function directFetchWithBoundedResponseStart(
 ): Promise<Response> {
   if (!timeoutMs || timeoutMs <= 0) return fetchImpl(input, options);
   const attemptController = new AbortController();
-  const timer = setTimeout(
-    () => attemptController.abort(createDirectResponseStartTimeout(timeoutMs)),
-    timeoutMs
-  );
+  // #timer-abort-race: clearTimeout cannot cancel a timer whose callback is
+  // already queued. If the fetch settles in that window, abort() lands on an
+  // already-finished undici request and can throw synchronously from inside
+  // the timer callback — an uncatchable-from-user-code uncaughtException that
+  // killed the gateway (2026-09-13 23:28 restart, stack: Timeout._onTimeout ->
+  // undici). The race is benign by definition: the response already started,
+  // so the timeout's purpose is fulfilled. Swallow and move on.
+  const timer = setTimeout(() => {
+    try {
+      attemptController.abort(createDirectResponseStartTimeout(timeoutMs));
+    } catch {
+      /* fetch settled between timer fire and abort — nothing to abort */
+    }
+  }, timeoutMs);
   timer.unref?.();
   try {
     return await fetchImpl(input, {
