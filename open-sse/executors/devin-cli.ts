@@ -148,7 +148,32 @@ export class DevinCliExecutor extends BaseExecutor {
     const sseStream = new ReadableStream<Uint8Array>({
       start(controller) {
         const enc = new TextEncoder();
-        const emit = (data: string) => controller.enqueue(enc.encode(data));
+        // #controller-closed-crash: finish() closes the controller while the
+        // child may still emit stdout lines for up to 2s (SIGKILL grace). A late
+        // enqueue on a closed controller throws ERR_INVALID_STATE inside the
+        // stdout data handler -> uncaughtException kills the gateway
+        // (2026-09-13 restarts). Track closed state and drop late emits.
+        let controllerClosed = false;
+        const emit = (data: string) => {
+          if (controllerClosed) return;
+          try {
+            controller.enqueue(enc.encode(data));
+          } catch (err) {
+            console.error(
+              "[devin-cli] enqueue after controller closed (suppressed):",
+              (err as Error)?.message
+            );
+          }
+        };
+        const closeController = () => {
+          if (controllerClosed) return;
+          controllerClosed = true;
+          try {
+            controller.close();
+          } catch {
+            /* already closed by the stream consumer */
+          }
+        };
 
         const env: NodeJS.ProcessEnv = { ...process.env };
         if (apiKey) env.WINDSURF_API_KEY = apiKey;
@@ -174,7 +199,7 @@ export class DevinCliExecutor extends BaseExecutor {
             `data: ${JSON.stringify({ error: { message: msg, type: "devin_cli_error", code: "spawn_failed" } })}\n\n`
           );
           emit("data: [DONE]\n\n");
-          controller.close();
+          closeController();
         });
 
         if (signal) {
@@ -250,7 +275,7 @@ export class DevinCliExecutor extends BaseExecutor {
           }, 2000);
           killTimer.unref?.();
 
-          controller.close();
+          closeController();
         };
 
         // ── stdout reader (NDJSON) ──────────────────────────────────────────
