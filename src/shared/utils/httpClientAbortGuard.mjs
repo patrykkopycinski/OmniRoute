@@ -61,6 +61,15 @@ export function isClientAbortError(err) {
   ) {
     return true;
   }
+  // DIRECT_RESPONSE_START_TIMEOUT: proxyFetch's direct path aborts a stalled
+  // fetch with a fresh-socket TimeoutError after 30s and retries on a new
+  // dispatcher. The retried attempt is awaited and handled by the combo
+  // dispatcher, but when the timeout fires on the FINAL attempt (or a
+  // caller-side promise was dropped mid-flight) the rejection has no handler
+  // in that frame and Next.js escalates it to a process kill (2026-09-14
+  // 07:0x restarts). A response-start timeout is an upstream-slow condition,
+  // not a gateway fault — swallowing keeps parity with the other deliberate
+  // combo-dispatch abort reasons above.
   switch (e.code) {
     case "ERR_STREAM_PREMATURE_CLOSE":
     case "ECONNRESET":
