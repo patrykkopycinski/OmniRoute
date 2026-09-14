@@ -43,12 +43,14 @@ test("params: null/undefined params leave body untouched (off-by-default)", () =
 
 // ─── applyComboStepParams: thinking off ───
 
-test("params: thinking off sets chat_template_kwargs.enable_thinking=false (SGLang knob)", () => {
+test("params: thinking off sets flat chat_template_kwargs (raw-HTTP SGLang reads it top-level)", () => {
   const body = {};
   applyComboStepParams(body, { thinking: "off" });
-  assert.deepEqual(body.extra_body, {
-    chat_template_kwargs: { enable_thinking: false },
-  });
+  // FLAT is the wire shape raw-HTTP SGLang/vLLM actually parse; nested-only
+  // values are silently ignored (live-verified 2026-09-15).
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+  // extra_body copy for SDK-style consumers that unwrap it client-side.
+  assert.deepEqual(body.extra_body?.chat_template_kwargs, { enable_thinking: false });
   assert.equal(body.reasoning_effort, undefined);
 });
 
@@ -63,6 +65,7 @@ test("params: thinking off PRESERVES existing extra_body keys", () => {
   applyComboStepParams(body, { thinking: "off" });
   assert.equal(body.extra_body.top_k, 5);
   assert.equal(body.extra_body.chat_template_kwargs.enable_thinking, false);
+  assert.equal(body.chat_template_kwargs.enable_thinking, false);
 });
 
 // ─── applyComboStepParams: extraBody merge ───

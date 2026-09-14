@@ -58,11 +58,18 @@ export function applyComboStepParams(
   }
 
   // 2. Thinking off — SGLang chat_template_kwargs, never reasoning_effort.
+  //    Wire shape matters: over raw HTTP SGLang/vLLM read chat_template_kwargs
+  //    as a FLAT top-level body field; the extra_body wrapper is an OpenAI
+  //    python-SDK client-side convention that gets unwrapped before send, so a
+  //    nested value is silently IGNORED by raw-HTTP hops (live-verified against
+  //    qwen3.8-27b cells: flat -> 2 completion tokens; nested -> thinking runs).
+  //    We emit BOTH: flat for raw HTTP, extra_body for SDK-style consumers.
   if (params.thinking === "off") {
-    const extra = (body.extra_body as Record<string, unknown> | undefined) ?? {};
-    const kwargs = (extra[TEMPLATE_KWARGS] as Record<string, unknown> | undefined) ?? {};
+    const kwargs = (body[TEMPLATE_KWARGS] as Record<string, unknown> | undefined) ?? {};
     kwargs.enable_thinking = false;
-    extra[TEMPLATE_KWARGS] = kwargs;
+    body[TEMPLATE_KWARGS] = kwargs;
+    const extra = (body.extra_body as Record<string, unknown> | undefined) ?? {};
+    extra[TEMPLATE_KWARGS] = { ...kwargs };
     body.extra_body = extra;
     // Drop any client effort knob for this step: an explicit effort on the body
     // could re-enable provider-side thinking on effort-aware upstreams.
