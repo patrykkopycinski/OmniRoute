@@ -21,13 +21,13 @@ test("params: maxTokens NEVER raises a smaller client limit (never-enlarge contr
 });
 
 test("params: maxTokens imposed when client set no limit (64k-default class)", () => {
-  const body = {};
+  const body: Record<string, any> = {};
   applyComboStepParams(body, { maxTokens: 12288 });
   assert.equal(body.max_tokens, 12288);
 });
 
 test("params: maxTokens writes whichever key the client used (max_completion_tokens)", () => {
-  const body = { max_completion_tokens: 40000 };
+  const body: Record<string, any> = { max_completion_tokens: 40000 };
   applyComboStepParams(body, { maxTokens: 8192 });
   assert.equal(body.max_completion_tokens, 8192);
   assert.equal(body.max_tokens, undefined);
@@ -44,7 +44,7 @@ test("params: null/undefined params leave body untouched (off-by-default)", () =
 // ─── applyComboStepParams: thinking off ───
 
 test("params: thinking off sets flat chat_template_kwargs (raw-HTTP SGLang reads it top-level)", () => {
-  const body = {};
+  const body: Record<string, any> = {};
   applyComboStepParams(body, { thinking: "off" });
   // FLAT is the wire shape raw-HTTP SGLang/vLLM actually parse; nested-only
   // values are silently ignored (live-verified 2026-09-15).
@@ -61,7 +61,7 @@ test("params: thinking off drops client reasoning_effort (could re-enable upstre
 });
 
 test("params: thinking off PRESERVES existing extra_body keys", () => {
-  const body = { extra_body: { top_k: 5 } };
+  const body: Record<string, any> = { extra_body: { top_k: 5 } };
   applyComboStepParams(body, { thinking: "off" });
   assert.equal(body.extra_body.top_k, 5);
   assert.equal(body.extra_body.chat_template_kwargs.enable_thinking, false);
@@ -77,7 +77,7 @@ test("params: extraBody shallow-merges per key, step value wins", () => {
 });
 
 test("params: extraBody creates extra_body when absent", () => {
-  const body = {};
+  const body: Record<string, any> = {};
   applyComboStepParams(body, { extraBody: { seed: 7 } });
   assert.deepEqual(body.extra_body, { seed: 7 });
 });
