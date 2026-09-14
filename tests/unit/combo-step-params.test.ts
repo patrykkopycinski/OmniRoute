@@ -138,6 +138,43 @@ test("guards: skips streaming requests", async () => {
   assert.equal(out, res);
 });
 
+// ─── guards: content-length integrity after merge (live incident 2026-09-15) ───
+test("guards: merged response content-length matches body (no stale CL)", async () => {
+  const payload = {
+    choices: [{ message: { content: "", reasoning_content: "the answer" } }],
+    usage: { prompt_tokens: 100, completion_tokens: 5 },
+  };
+  // Simulate the upstream: a Response whose serialized body is LONGER than
+  // the post-merge body will be (reasoning_content gets dropped on merge).
+  const res = new Response(JSON.stringify(payload), {
+    headers: {
+      "content-type": "application/json",
+      // deliberately WRONG (stale) length, as the gateway used to forward
+      "content-length": String(JSON.stringify(payload).length + 23),
+    },
+  });
+  const out = await applyComboStepResponseGuards(res, { mergeReasoningIntoContent: true }, false);
+  const bodyText = await out.text();
+  const raw = out.headers.get("content-length");
+  // Contract: after a merge the response must NEVER carry a stale CL.
+  // Either CL is absent (server frames chunked — correct) or it exactly
+  // equals the real body length. Anything else breaks strict HTTP clients.
+  assert.ok(
+    raw === null || Number(raw) === bodyText.length,
+    `stale content-length ${raw} vs body length ${bodyText.length}`
+  );
+  const parsed = JSON.parse(bodyText);
+  assert.equal(parsed.choices[0].message.content, "the answer");
+});
+test("guards: non-merged passthrough preserves original CL (untouched path)", async () => {
+  const payload = { choices: [{ message: { content: "already", reasoning_content: "r" } }] };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  const out = await applyComboStepResponseGuards(res, { mergeReasoningIntoContent: true }, false);
+  assert.equal(out, res);
+});
+
 test("guards: skips when content already present", async () => {
   const payload = { choices: [{ message: { content: "fine", reasoning_content: "x" } }] };
   const res = new Response(JSON.stringify(payload), {

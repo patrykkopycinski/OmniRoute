@@ -154,9 +154,22 @@ export async function applyComboStepResponseGuards(
   const merged = mergeReasoningIntoContentIfEmpty(choice, true);
   if (!merged || !choices) return result;
   choices[0].message = merged;
-  return new Response(JSON.stringify(parsed), {
+  // Rebuild the response body from the parsed JSON. NEVER forward the
+  // original headers object: it carries the upstream content-length, which
+  // described the PRE-merge body. A mutated body + stale CL = every strict
+  // HTTP client (openai SDK / httpx / node fetch) sees a truncated body and
+  // throws (live incident 2026-09-15: memory retains failed APIConnectionError).
+  const bodyText = JSON.stringify(parsed);
+  const headers = new Headers();
+  // Copy every header EXCEPT content-length; Response recomputes it from the
+  // actual body bytes (and removes it entirely under chunked encoding).
+  for (const [k, v] of result.headers.entries()) {
+    if (k.toLowerCase() === "content-length") continue;
+    headers.set(k, v);
+  }
+  return new Response(bodyText, {
     status: result.status,
     statusText: result.statusText,
-    headers: result.headers,
+    headers,
   });
 }
