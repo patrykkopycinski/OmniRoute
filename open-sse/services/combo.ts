@@ -1779,19 +1779,20 @@ async function handleComboChatInner({
                 decision: "dispatched",
               });
             }
-            const result = await handleSingleModelWithTimeout(attemptBody, modelStr, {
+            let result = await handleSingleModelWithTimeout(attemptBody, modelStr, {
               ...targetForAttempt,
               effectiveComboStrategy: strategy,
               failoverBeforeRetry: config.failoverBeforeRetry,
             });
             // feat/combo-step-params: response-side guards (reasoning→content
-            // merge) before quality validation reads the body.
-            const guardedResult = await applyComboStepResponseGuards(
+            // merge) BEFORE quality validation, reassigning in place so every
+            // downstream stage (quality check, metrics, sticky pins) sees the
+            // merged response. Guard reads via clone() — never disturbs the body.
+            result = await applyComboStepResponseGuards(
               result,
               target.params,
               clientRequestedStream
             );
-            if (guardedResult !== result) return guardedResult;
 
             // Success — validate response quality before returning
             if (result.ok) {
@@ -3584,21 +3585,21 @@ async function handleRoundRobinCombo({
             applyComboStepParams(attemptBody as unknown as Record<string, unknown>, target.params);
           }
 
-          const result = await Promise.race([
+          let result = (await Promise.race([
             handleSingleModel(attemptBody, modelStr, {
               ...targetForAttempt,
               effectiveComboStrategy: "round-robin",
               failoverBeforeRetry: config.failoverBeforeRetry,
             }),
             rrSafetyPromise,
-          ]);
-          // feat/combo-step-params: same response guards on the RR path.
-          const rrGuarded = await applyComboStepResponseGuards(
+          ])) as unknown as Response;
+          // feat/combo-step-params: same response guards on the RR path,
+          // reassigned in place so quota/metrics bookkeeping sees the merge.
+          result = await applyComboStepResponseGuards(
             result as unknown as Response,
             target.params,
             clientRequestedStream
           );
-          if (rrGuarded !== result) return rrGuarded;
           if (rrExpired) return result; // G4: safety timer won — stop everything
 
           // Quota-aware scheduling: reserve the estimated budget for this

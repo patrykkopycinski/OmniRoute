@@ -125,9 +125,18 @@ export async function applyComboStepResponseGuards(
   if (!result || typeof result.json !== "function") return result;
   const ct = result.headers?.get?.("content-type") || "";
   if (!ct.includes("application/json")) return result;
+  // NEVER read the original body directly — later stages (quality validation,
+  // logging) still need it, and a disturbed body throws ERR_INVALID_STATE.
+  // Read via clone(); on merge, return a NEW Response.
+  let jsonClone: Response;
+  try {
+    jsonClone = result.clone();
+  } catch {
+    return result; // not cloneable — leave untouched
+  }
   let parsed: unknown;
   try {
-    parsed = await result.json();
+    parsed = await jsonClone.json();
   } catch {
     return result; // not JSON — leave untouched
   }
