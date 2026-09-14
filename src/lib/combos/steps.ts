@@ -26,6 +26,18 @@ export interface ComboModelStep {
   prompt?: string | null;
   tags?: string[];
   fallbackOnlyOnQuotaExhaustion?: boolean;
+  /**
+   * Per-step request params (feat/combo-step-params): token caps, thinking
+   * control, extra_body merges — applied to this step's attempt body only.
+   * Must survive normalizeComboStep so the API round-trips it. Shape and
+   * bounds are enforced by comboModelStepInputSchema (zod) at write time.
+   */
+  params?: {
+    maxTokens?: number;
+    thinking?: "off";
+    extraBody?: Record<string, unknown>;
+    mergeReasoningIntoContent?: boolean;
+  };
 }
 
 export interface ComboRefStep {
@@ -290,6 +302,12 @@ export function normalizeComboStep(
   const label = toTrimmedString(value.label);
   const prompt = toTrimmedString(value.prompt);
   const fallbackOnlyOnQuotaExhaustion = value.fallbackOnlyOnQuotaExhaustion === true;
+  // feat/combo-step-params: pass through the (already zod-validated) params
+  // object; deep-shape validated at the API boundary, kept verbatim here.
+  const params =
+    value.params && typeof value.params === "object" && !Array.isArray(value.params)
+      ? (value.params as NonNullable<ComboModelStep["params"]>)
+      : undefined;
 
   if (value.kind === "combo-ref") {
     const comboRefName = toTrimmedString(value.comboName);
@@ -411,6 +429,7 @@ export function normalizeComboStep(
     weight,
     ...(label ? { label } : {}),
     ...(prompt ? { prompt } : {}),
+    ...(params ? { params } : {}),
     ...(tags && tags.length > 0 ? { tags } : {}),
     ...(allowedConnectionIds && allowedConnectionIds.length > 0 ? { allowedConnectionIds } : {}),
     ...(fallbackOnlyOnQuotaExhaustion ? { fallbackOnlyOnQuotaExhaustion: true } : {}),

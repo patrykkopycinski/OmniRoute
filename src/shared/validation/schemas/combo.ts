@@ -35,6 +35,17 @@ export const comboModelStepInputSchema = z.object({
   // step's input, and this `prompt` is injected as that step's system instruction.
   // Ignored by every other strategy, so it is fully backward-compatible.
   prompt: z.string().trim().min(1).max(20000).optional(),
+  // Per-step request params (feat/combo-step-params): optional per-step
+  // request shaping — token caps, thinking control, extra_body merges.
+  // Model steps only; combo-refs resolve to their own steps' params.
+  params: z
+    .object({
+      maxTokens: z.number().int().min(64).max(200000).optional(),
+      thinking: z.enum(["off"]).optional(),
+      extraBody: z.record(z.string(), z.unknown()).optional(),
+      mergeReasoningIntoContent: z.boolean().optional(),
+    })
+    .optional(),
   ...comboStepMetaSchema,
 });
 
