@@ -70,6 +70,7 @@ export function isClientAbortError(err) {
   // 07:0x restarts). A response-start timeout is an upstream-slow condition,
   // not a gateway fault — swallowing keeps parity with the other deliberate
   // combo-dispatch abort reasons above.
+  if (e.code === "DIRECT_RESPONSE_START_TIMEOUT") return true;
   switch (e.code) {
     case "ERR_STREAM_PREMATURE_CLOSE":
     case "ECONNRESET":
@@ -150,7 +151,7 @@ export function installProcessCrashGuard(log) {
   // abort the guard exists to swallow. Default to console.warn as a function.
   const logger = typeof log === "function" ? log : console.warn.bind(console);
 
-  process.on("uncaughtException", (err, origin) => {
+  process.prependListener("uncaughtException", (err, origin) => {
     if (shouldSwallowUncaught(err, origin)) {
       logger("warn", "[server] swallowed client-abort uncaughtException:", err?.message ?? err);
       return;
@@ -158,7 +159,7 @@ export function installProcessCrashGuard(log) {
     throw err;
   });
 
-  process.on("unhandledRejection", (reason) => {
+  process.prependListener("unhandledRejection", (reason) => {
     if (shouldSwallowUncaught(reason, "unhandledRejection")) {
       logger(
         "warn",
