@@ -19,6 +19,7 @@
 
 export type ComboOutcomeKind =
   | "quality"
+  | "agentic_stall"
   | "auth"
   | "rate_limit"
   | "model"
@@ -36,6 +37,7 @@ export interface ComboErrorEntry {
 
 const KIND_LABELS: Record<ComboOutcomeKind, string> = {
   quality: "quality validation",
+  agentic_stall: "agentic stall",
   auth: "auth",
   rate_limit: "rate limit",
   model: "model",

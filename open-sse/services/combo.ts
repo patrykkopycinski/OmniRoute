@@ -178,6 +178,11 @@ import {
   toRetryAfterDisplayValue,
 } from "./combo/validateQuality.ts";
 import {
+  AGENTIC_STALL_SIGNATURE,
+  classifyAgenticStallResponse,
+} from "./combo/agenticStall.ts";
+import { saveCallLog } from "@/lib/usage/callLogs";
+import {
   resolveComboCooldownWaitDecision,
   resolveCircuitOpenWaitDecision,
   ResolveComboCooldownDecisionResult,
@@ -742,6 +747,46 @@ export async function resolveTargetTimeoutMsForTarget(
  * per-target decisions is possible; the finalized summary is also emitted as
  * one metadata-only log line for durability across restarts.
  */
+
+/**
+ * Agentic-stall audit row (kanban t_1ebaf474): the stalled hop's own call_logs
+ * entry is a clean 200 written by the single-model path, so the classification
+ * is persisted as its own row — call_logs.error_summary is the audit surface.
+ * Fire-and-forget; a logging failure must never break the request path.
+ */
+function persistAgenticStallAuditRow(fields: {
+  comboName: string;
+  modelStr: string;
+  provider: string;
+  rawModel: string;
+  connectionId: string;
+  stepId: string | null;
+  executionKey: string | null;
+  latencyMs: number;
+  detail: string;
+  sourceFormat: string | null;
+  endpointPath: string | null;
+}): void {
+  try {
+    void saveCallLog({
+      status: 200,
+      model: fields.rawModel || fields.modelStr,
+      requestedModel: fields.comboName,
+      provider: fields.provider,
+      connectionId: fields.connectionId || null,
+      duration: fields.latencyMs,
+      comboName: fields.comboName,
+      comboStepId: fields.stepId,
+      comboExecutionKey: fields.executionKey,
+      sourceFormat: fields.sourceFormat,
+      path: fields.endpointPath || "/v1/chat/completions",
+      error: `${AGENTIC_STALL_SIGNATURE}: ${fields.detail}`,
+    }).catch(() => {});
+  } catch {
+    /* the audit row must never break the request path */
+  }
+}
+
 export async function handleComboChat(options: HandleComboChatOptions): Promise<Response> {
   const traceInvocationId = options.invocationId ?? createInvocationId();
   const response = await handleComboChatInner({ ...options, invocationId: traceInvocationId });
@@ -1883,6 +1928,74 @@ async function handleComboChatInner({
                   ? {
                       ok: false,
                       response: errorResponse(502, "Upstream response failed quality validation"),
+                    }
+                  : null;
+              }
+
+              // Agentic-stall failover (kanban t_1ebaf474): a 200 that passes
+              // quality can still be a mid-agentic-turn stall — the provider
+              // returned stop + summary/narration as content with NO tool call
+              // while the conversation tail was a tool result (confirmed live:
+              // devin/swe-2-max; same symptom from openrouter/deepseek-v4-pro-
+              // 0813). Harnesses read stop+no-tool-call as turn-over and the
+              // session summarize-loops forever. Treat exactly like a quality
+              // rejection: try the NEXT member.
+              const stallVerdict = await classifyAgenticStallResponse({
+                body: attemptBody,
+                response: result,
+              });
+              if (stallVerdict) {
+                log.warn(
+                  "COMBO",
+                  `${AGENTIC_STALL_SIGNATURE}: ${modelStr} returned stop + narration with no tool call on a tool-result tail — failing over (${stallVerdict.detail})`
+                );
+                releaseStickyPinOnFailure(_sticky.messageHash, effectiveConnectionId);
+                recordComboRequest(combo.name, modelStr, {
+                  success: false,
+                  latencyMs: Date.now() - startTime,
+                  fallbackCount,
+                  strategy,
+                  target: toRecordedTarget(target),
+                });
+                recordedAttempts++;
+                lastError = `${AGENTIC_STALL_SIGNATURE}: ${stallVerdict.detail}`;
+                lastStatus = 502;
+                comboErrors.push({
+                  model: modelStr,
+                  status: 502,
+                  error: stallVerdict.detail,
+                  kind: "agentic_stall",
+                });
+                if (i > 0) fallbackCount++;
+                persistAgenticStallAuditRow({
+                  comboName: combo.name,
+                  modelStr,
+                  provider: provider || "unknown",
+                  rawModel: rawModel || modelStr,
+                  connectionId: effectiveConnectionId,
+                  stepId: target.stepId ?? null,
+                  executionKey: target.executionKey ?? null,
+                  latencyMs: Date.now() - startTime,
+                  detail: stallVerdict.detail,
+                  sourceFormat: sourceFormat ?? null,
+                  endpointPath: endpointPath ?? null,
+                });
+                emit("combo.target.failed", {
+                  comboName: combo.name,
+                  targetIndex: i,
+                  provider,
+                  model: modelStr,
+                  error: `${AGENTIC_STALL_SIGNATURE}: ${stallVerdict.detail}`,
+                  latencyMs: Date.now() - startTime,
+                });
+                observeFailure(false, target.executionKey);
+                return protectedPriorityTarget
+                  ? {
+                      ok: false,
+                      response: errorResponse(
+                        502,
+                        "Upstream returned an agentic-stall response (stop with no tool call mid-agentic-turn)"
+                      ),
                     }
                   : null;
               }
@@ -3674,6 +3787,61 @@ async function handleRoundRobinCombo({
                 kind: "quality",
               });
               if (offset > 0) fallbackCount++;
+              break; // move to next model
+            }
+
+            // Agentic-stall failover (kanban t_1ebaf474) — RR mirror of the
+            // main-path guard: a stop + narration response with no tool call
+            // on a tool-result tail moves to the next model, not the client.
+            const rrStallVerdict = await classifyAgenticStallResponse({
+              body: attemptBody,
+              response: result as unknown as Response,
+            });
+            if (rrStallVerdict) {
+              log.warn(
+                "COMBO-RR",
+                `${AGENTIC_STALL_SIGNATURE}: ${modelStr} returned stop + narration with no tool call on a tool-result tail — failing over (${rrStallVerdict.detail})`
+              );
+              {
+                const rrStallConnectionId =
+                  result.headers?.get("X-OmniRoute-Selected-Connection-Id") ||
+                  result.headers?.get("x-omniroute-selected-connection-id") ||
+                  undefined;
+                releaseStickyPinOnFailure(
+                  _rrSessionSticky.messageHash,
+                  rrStallConnectionId || target.connectionId
+                );
+              }
+              recordComboRequest(combo.name, modelStr, {
+                success: false,
+                latencyMs: Date.now() - startTime,
+                fallbackCount,
+                strategy: "round-robin",
+                target: toRecordedTarget(target),
+              });
+              recordedAttempts++;
+              lastError = `${AGENTIC_STALL_SIGNATURE}: ${rrStallVerdict.detail}`;
+              lastStatus = 502;
+              rrOutcomes.push({
+                model: modelStr,
+                status: 502,
+                error: rrStallVerdict.detail,
+                kind: "agentic_stall",
+              });
+              if (offset > 0) fallbackCount++;
+              persistAgenticStallAuditRow({
+                comboName: combo.name,
+                modelStr,
+                provider: provider || "unknown",
+                rawModel: parseModel(modelStr).model || modelStr,
+                connectionId: target.connectionId || "",
+                stepId: target.stepId ?? null,
+                executionKey: target.executionKey ?? null,
+                latencyMs: Date.now() - startTime,
+                detail: rrStallVerdict.detail,
+                sourceFormat: sourceFormat ?? null,
+                endpointPath: endpointPath ?? null,
+              });
               break; // move to next model
             }
             const latencyMs = Date.now() - startTime;

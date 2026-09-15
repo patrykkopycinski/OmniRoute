@@ -412,6 +412,10 @@ This means **adding a new provider with `auto/*` enabled automatically expands t
 - **Incident mode**: >50% OPEN → disable exploration, maximize stability
 - **Cooldown recovery**: After exclusion, first request is a "probe" with reduced timeout
 
+### Agentic-stall failover
+
+When a combo member answers a **mid-agentic-turn** request — tools offered and the conversation tail is a tool result — with `finish: stop` (or `end_turn`), summary/narration as content, and **no tool call**, the gateway classifies the response as an agentic stall (`agentic_stall_no_toolcall`) and fails over to the next combo member instead of returning it. Agent harnesses read stop+no-tool-call as turn-over, so a provider that summarizes instead of acting would otherwise loop the session forever (observed live from multiple unrelated providers; the guard keys on request/response shape, never on model id). One attempt per member per request, same failover semantics as a quality-validation rejection; the classification is persisted to `call_logs.error_summary` on the stalled hop. Kill switch: `OMNIROUTE_AGENTIC_STALL_FAILOVER=0`.
+
 ## Bandit Exploration
 
 5% of requests (configurable) are routed to random providers for exploration. Disabled in incident mode.
