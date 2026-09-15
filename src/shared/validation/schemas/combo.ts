@@ -29,6 +29,7 @@ export const comboStepParamsSchema = z
     thinking: z.enum(["off"]).optional(),
     extraBody: z.record(z.string(), z.unknown()).optional(),
     mergeReasoningIntoContent: z.boolean().optional(),
+    stripResponseFormat: z.boolean().optional(),
   })
   .optional();
 export const comboModelStepInputSchema = z.object({

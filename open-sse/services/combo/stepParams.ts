@@ -32,12 +32,23 @@ export type ComboStepParams = {
   thinking?: "off";
   extraBody?: Record<string, unknown>;
   mergeReasoningIntoContent?: boolean;
+  stripResponseFormat?: boolean;
 };
 
 const TEMPLATE_KWARGS = "chat_template_kwargs";
 
 /** Apply per-step params to a per-attempt request body (copy-on-write safe:
  *  callers pass their per-attempt copy; we mutate it in place and return it). */
+// stripResponseFormat: removes response_format before the request leaves the
+// gateway. Reason: SGLang 0.5.19's xgrammar structured-output path aborts
+// generations (finish_reason:"abort", 3-char content) under concurrent load —
+// reproduced 9-10/16 aborts at conc=16 with response_format present, 0/16
+// without, on both cells, 2026-09-15. Free-form JSON prompting + parse is the
+// reliable path for fact extraction on qwen3.8.
+export function applyStripResponseFormat(body: Record<string, unknown>): void {
+  if ("response_format" in body) delete body.response_format;
+}
+
 export function applyComboStepParams(
   body: Record<string, unknown>,
   params: ComboStepParams | null | undefined
@@ -83,6 +94,12 @@ export function applyComboStepParams(
       if (v !== undefined) extra[k] = v;
     }
     body.extra_body = extra;
+  }
+
+  // 4. stripResponseFormat — drop response_format before the request leaves
+  //    the gateway (SGLang xgrammar abort workaround; see doc comment above).
+  if (params.stripResponseFormat === true) {
+    applyStripResponseFormat(body);
   }
 
   return body;

@@ -21,13 +21,13 @@ test("params: maxTokens NEVER raises a smaller client limit (never-enlarge contr
 });
 
 test("params: maxTokens imposed when client set no limit (64k-default class)", () => {
-  const body: Record<string, any> = {};
+  const body: Record<string, unknown> = {};
   applyComboStepParams(body, { maxTokens: 12288 });
   assert.equal(body.max_tokens, 12288);
 });
 
 test("params: maxTokens writes whichever key the client used (max_completion_tokens)", () => {
-  const body: Record<string, any> = { max_completion_tokens: 40000 };
+  const body: Record<string, unknown> = { max_completion_tokens: 40000 };
   applyComboStepParams(body, { maxTokens: 8192 });
   assert.equal(body.max_completion_tokens, 8192);
   assert.equal(body.max_tokens, undefined);
@@ -44,7 +44,7 @@ test("params: null/undefined params leave body untouched (off-by-default)", () =
 // ─── applyComboStepParams: thinking off ───
 
 test("params: thinking off sets flat chat_template_kwargs (raw-HTTP SGLang reads it top-level)", () => {
-  const body: Record<string, any> = {};
+  const body: Record<string, unknown> = {};
   applyComboStepParams(body, { thinking: "off" });
   // FLAT is the wire shape raw-HTTP SGLang/vLLM actually parse; nested-only
   // values are silently ignored (live-verified 2026-09-15).
@@ -61,7 +61,7 @@ test("params: thinking off drops client reasoning_effort (could re-enable upstre
 });
 
 test("params: thinking off PRESERVES existing extra_body keys", () => {
-  const body: Record<string, any> = { extra_body: { top_k: 5 } };
+  const body: Record<string, unknown> = { extra_body: { top_k: 5 } };
   applyComboStepParams(body, { thinking: "off" });
   assert.equal(body.extra_body.top_k, 5);
   assert.equal(body.extra_body.chat_template_kwargs.enable_thinking, false);
@@ -77,7 +77,7 @@ test("params: extraBody shallow-merges per key, step value wins", () => {
 });
 
 test("params: extraBody creates extra_body when absent", () => {
-  const body: Record<string, any> = {};
+  const body: Record<string, unknown> = {};
   applyComboStepParams(body, { extraBody: { seed: 7 } });
   assert.deepEqual(body.extra_body, { seed: 7 });
 });
@@ -117,29 +117,41 @@ test("merge: no-op when reasoning absent", () => {
 // ─── combo-ref params (inheritance + override) ───
 test("ref params: normalizer keeps params on combo-ref steps", async () => {
   const { normalizeComboStep } = await import("../../src/lib/combos/steps.ts");
-  const step = normalizeComboStep({
-    kind: "combo-ref",
-    comboName: "qwen38-local",
-    params: { maxTokens: 12288 },
-  }, { comboName: "memory", index: 0 });
+  const step = normalizeComboStep(
+    {
+      kind: "combo-ref",
+      comboName: "qwen38-local",
+      params: { maxTokens: 12288 },
+    },
+    { comboName: "memory", index: 0 }
+  );
   if (!step || step.kind !== "combo-ref") throw new Error("not a combo-ref step");
   assert.deepEqual(step.params, { maxTokens: 12288 });
 });
 test("ref params: combo-ref without params stays params-free", async () => {
   const { normalizeComboStep } = await import("../../src/lib/combos/steps.ts");
-  const step = normalizeComboStep({
-    kind: "combo-ref",
-    comboName: "qwen38-local",
-  }, { comboName: "memory", index: 0 });
+  const step = normalizeComboStep(
+    {
+      kind: "combo-ref",
+      comboName: "qwen38-local",
+    },
+    { comboName: "memory", index: 0 }
+  );
   if (!step || step.kind !== "combo-ref") throw new Error("not a combo-ref step");
   assert.equal(step.params, undefined);
 });
 test("ref params: ref params OVERRIDE nested model-step params on expansion", async () => {
-  const { resolveNestedComboTargets } = await import("../../open-sse/services/combo/comboStructure.ts");
+  const { resolveNestedComboTargets } =
+    await import("../../open-sse/services/combo/comboStructure.ts");
   const nestedCombo = {
     name: "qwen38-local",
     models: [
-      { kind: "model", id: "a", model: "qwen38a100/qwen3.8-27b", params: { maxTokens: 999, thinking: "on" } },
+      {
+        kind: "model",
+        id: "a",
+        model: "qwen38a100/qwen3.8-27b",
+        params: { maxTokens: 999, thinking: "on" },
+      },
       { kind: "model", id: "b", model: "qwen38a100b/qwen3.8-27b" },
     ],
     strategy: "round-robin",
@@ -147,23 +159,33 @@ test("ref params: ref params OVERRIDE nested model-step params on expansion", as
   const parentCombo = {
     name: "memory",
     models: [
-      { kind: "combo-ref", id: "r1", comboName: "qwen38-local", params: { maxTokens: 12288, thinking: "off" } },
+      {
+        kind: "combo-ref",
+        id: "r1",
+        comboName: "qwen38-local",
+        params: { maxTokens: 12288, thinking: "off" },
+      },
       { kind: "model", id: "m1", model: "openrouter/deepseek/deepseek-v4.1-flash" },
     ],
     strategy: "priority",
   };
   const targets = resolveNestedComboTargets(parentCombo, [parentCombo, nestedCombo]);
-  const qwenTargets = targets.filter((t: any) => String(t.modelStr).includes("qwen"));
+  const qwenTargets = targets.filter((t: { modelStr: string; params?: Record<string, unknown> }) =>
+    String(t.modelStr).includes("qwen")
+  );
   assert.equal(qwenTargets.length, 2);
   for (const t of qwenTargets) {
     assert.deepEqual(t.params, { maxTokens: 12288, thinking: "off" });
   }
   // nested's own 999/thinking:on must NOT survive on the qwen38a100 target
-  const a = qwenTargets.find((t: any) => t.modelStr.includes("qwen38a100/"));
+  const a = qwenTargets.find((t: { modelStr: string; params?: Record<string, unknown> }) =>
+    t.modelStr.includes("qwen38a100/")
+  );
   assert.notEqual(a.params?.maxTokens, 999);
 });
 test("ref params: no ref params → nested model-step params survive untouched", async () => {
-  const { resolveNestedComboTargets } = await import("../../open-sse/services/combo/comboStructure.ts");
+  const { resolveNestedComboTargets } =
+    await import("../../open-sse/services/combo/comboStructure.ts");
   const nestedCombo = {
     name: "qwen38-local",
     models: [
@@ -173,9 +195,7 @@ test("ref params: no ref params → nested model-step params survive untouched",
   };
   const parentCombo = {
     name: "parent",
-    models: [
-      { kind: "combo-ref", id: "r1", comboName: "qwen38-local" },
-    ],
+    models: [{ kind: "combo-ref", id: "r1", comboName: "qwen38-local" }],
     strategy: "priority",
   };
   const targets = resolveNestedComboTargets(parentCombo, [parentCombo, nestedCombo]);
@@ -199,49 +219,88 @@ test("execute: model unit applies params to a body copy (shared body untouched)"
     body: sharedBody,
     combo,
     strategy: "priority",
-    units: [{
-      kind: "model", stepId: "s1", executionKey: "k1",
-      modelStr: "qwen38a100/qwen3.8-27b", provider: "qwen38a100", providerId: null,
-      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
-      label: null, weight: 0,
-      params: { maxTokens: 12288, thinking: "off" },
-    } as never],
+    units: [
+      {
+        kind: "model",
+        stepId: "s1",
+        executionKey: "k1",
+        modelStr: "qwen38a100/qwen3.8-27b",
+        provider: "qwen38a100",
+        providerId: null,
+        connectionId: null,
+        allowedConnectionIds: null,
+        tags: null,
+        prompt: null,
+        fingerprint: null,
+        label: null,
+        weight: 0,
+        params: { maxTokens: 12288, thinking: "off" },
+      } as never,
+    ],
     handleSingleModel: handleSingleModel as never,
     log: { info() {}, warn() {}, error() {} } as never,
     config: { maxRetries: 0 },
     allCombos: [],
-    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    nesting: {
+      depth: 0,
+      maxDepth: 3,
+      visitedComboNames: ["t"],
+      attemptBudget: { count: 0, limit: 10 },
+    } as never,
     baseOptions: {} as never,
     runCombo: (async () => new Response("x")) as never,
   });
   assert.equal(seen.length, 1);
   assert.equal(seen[0].max_tokens, 12288, "cap applied on dispatch body");
-  assert.deepEqual(Object.keys(seen[0]).includes("chat_template_kwargs"), true, "thinking knob present");
+  assert.deepEqual(
+    Object.keys(seen[0]).includes("chat_template_kwargs"),
+    true,
+    "thinking knob present"
+  );
   assert.equal(sharedBody.max_tokens, 64000, "shared body MUST stay untouched");
 });
 test("execute: response guard merges empty-content + reasoning before quality check", async () => {
   const { executeRuntimeUnitCombo } = await import("../../open-sse/services/combo/runtimeUnits.ts");
   const handleSingleModel = async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "", reasoning_content: "facts" } }] }), {
-      headers: { "content-type": "application/json" },
-    });
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "", reasoning_content: "facts" } }] }),
+      {
+        headers: { "content-type": "application/json" },
+      }
+    );
   const combo = { name: "t", models: [], strategy: "priority", config: {} };
   const out = await executeRuntimeUnitCombo({
     body: {},
     combo,
     strategy: "priority",
-    units: [{
-      kind: "model", stepId: "s1", executionKey: "k1",
-      modelStr: "m", provider: "p", providerId: null,
-      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
-      label: null, weight: 0,
-      params: { mergeReasoningIntoContent: true },
-    } as never],
+    units: [
+      {
+        kind: "model",
+        stepId: "s1",
+        executionKey: "k1",
+        modelStr: "m",
+        provider: "p",
+        providerId: null,
+        connectionId: null,
+        allowedConnectionIds: null,
+        tags: null,
+        prompt: null,
+        fingerprint: null,
+        label: null,
+        weight: 0,
+        params: { mergeReasoningIntoContent: true },
+      } as never,
+    ],
     handleSingleModel: handleSingleModel as never,
     log: { info() {}, warn() {}, error() {} } as never,
     config: { maxRetries: 0 },
     allCombos: [],
-    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    nesting: {
+      depth: 0,
+      maxDepth: 3,
+      visitedComboNames: ["t"],
+      attemptBudget: { count: 0, limit: 10 },
+    } as never,
     baseOptions: {} as never,
     runCombo: (async () => new Response("x")) as never,
   });
@@ -263,21 +322,76 @@ test("execute: no params → body passed through verbatim (no shaping)", async (
     body: { temperature: 0.7 },
     combo,
     strategy: "priority",
-    units: [{
-      kind: "model", stepId: "s1", executionKey: "k1",
-      modelStr: "m", provider: "p", providerId: null,
-      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
-      label: null, weight: 0,
-    } as never],
+    units: [
+      {
+        kind: "model",
+        stepId: "s1",
+        executionKey: "k1",
+        modelStr: "m",
+        provider: "p",
+        providerId: null,
+        connectionId: null,
+        allowedConnectionIds: null,
+        tags: null,
+        prompt: null,
+        fingerprint: null,
+        label: null,
+        weight: 0,
+      } as never,
+    ],
     handleSingleModel: handleSingleModel as never,
     log: { info() {}, warn() {}, error() {} } as never,
     config: { maxRetries: 0 },
     allCombos: [],
-    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    nesting: {
+      depth: 0,
+      maxDepth: 3,
+      visitedComboNames: ["t"],
+      attemptBudget: { count: 0, limit: 10 },
+    } as never,
     baseOptions: {} as never,
     runCombo: (async () => new Response("x")) as never,
   });
   assert.deepEqual(seen[0], { temperature: 0.7 });
+});
+
+// ── stripResponseFormat ──────────────────────────────────────────────
+test("stripResponseFormat=true removes response_format from body", () => {
+  const body = {
+    model: "m",
+    messages: [],
+    response_format: { type: "json_object" },
+    max_tokens: 512,
+  };
+  applyComboStepParams(body, { stripResponseFormat: true });
+  assert.equal(body.response_format, undefined);
+  assert.ok(!("response_format" in body));
+  assert.equal(body.max_tokens, 512); // untouched
+});
+
+test("stripResponseFormat absent keeps response_format", () => {
+  const body = { model: "m", messages: [], response_format: { type: "json_object" } };
+  applyComboStepParams(body, {});
+  assert.deepEqual(body.response_format, { type: "json_object" });
+});
+
+test("stripResponseFormat=false (explicit) keeps response_format", () => {
+  const body = { model: "m", messages: [], response_format: { type: "json_object" } };
+  applyComboStepParams(body, { stripResponseFormat: false });
+  assert.deepEqual(body.response_format, { type: "json_object" });
+});
+
+test("stripResponseFormat composes with maxTokens + thinking off", () => {
+  const body = {
+    model: "m",
+    messages: [],
+    response_format: { type: "json_object" },
+    max_tokens: 64000,
+  };
+  applyComboStepParams(body, { stripResponseFormat: true, maxTokens: 12288, thinking: "off" });
+  assert.ok(!("response_format" in body));
+  assert.equal(body.max_tokens, 12288);
+  assert.equal((body.chat_template_kwargs as Record<string, unknown>).enable_thinking, false);
 });
 
 // ─── applyComboStepResponseGuards ───
