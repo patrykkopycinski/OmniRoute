@@ -47,6 +47,9 @@ export interface ComboRefStep {
   weight: number;
   label?: string;
   fallbackOnlyOnQuotaExhaustion?: boolean;
+  /** feat/combo-step-params: applies to every model this ref expands to;
+   *  OVERRIDES params set on the nested combo's own model steps. */
+  params?: ComboModelStep["params"];
 }
 
 export interface ComboProviderWildcardStep {
@@ -319,6 +322,7 @@ export function normalizeComboStep(
       weight,
       ...(label ? { label } : {}),
       ...(fallbackOnlyOnQuotaExhaustion ? { fallbackOnlyOnQuotaExhaustion: true } : {}),
+      ...(params ? { params } : {}),
     };
   }
 

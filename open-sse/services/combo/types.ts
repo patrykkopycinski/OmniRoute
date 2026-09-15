@@ -237,6 +237,9 @@ export type ResolvedComboRefTarget = {
   weight: number;
   label: string | null;
   fallbackOnlyOnQuotaExhaustion?: boolean;
+  /** feat/combo-step-params: applies to every model this ref expands to;
+   *  overrides params on the nested combo's own model steps. */
+  params?: ResolvedComboTarget["params"];
 };
 
 export type ResolvedComboUnit = ResolvedComboTarget | ResolvedComboRefTarget;

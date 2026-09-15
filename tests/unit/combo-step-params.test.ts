@@ -114,6 +114,75 @@ test("merge: no-op when reasoning absent", () => {
   assert.equal(out, null);
 });
 
+// ─── combo-ref params (inheritance + override) ───
+test("ref params: normalizer keeps params on combo-ref steps", async () => {
+  const { normalizeComboStep } = await import("../../src/lib/combos/steps.ts");
+  const step = normalizeComboStep({
+    kind: "combo-ref",
+    comboName: "qwen38-local",
+    params: { maxTokens: 12288 },
+  }, { comboName: "memory", index: 0 });
+  if (!step || step.kind !== "combo-ref") throw new Error("not a combo-ref step");
+  assert.deepEqual(step.params, { maxTokens: 12288 });
+});
+test("ref params: combo-ref without params stays params-free", async () => {
+  const { normalizeComboStep } = await import("../../src/lib/combos/steps.ts");
+  const step = normalizeComboStep({
+    kind: "combo-ref",
+    comboName: "qwen38-local",
+  }, { comboName: "memory", index: 0 });
+  if (!step || step.kind !== "combo-ref") throw new Error("not a combo-ref step");
+  assert.equal(step.params, undefined);
+});
+test("ref params: ref params OVERRIDE nested model-step params on expansion", async () => {
+  const { resolveNestedComboTargets } = await import("../../open-sse/services/combo/comboStructure.ts");
+  const nestedCombo = {
+    name: "qwen38-local",
+    models: [
+      { kind: "model", id: "a", model: "qwen38a100/qwen3.8-27b", params: { maxTokens: 999, thinking: "on" } },
+      { kind: "model", id: "b", model: "qwen38a100b/qwen3.8-27b" },
+    ],
+    strategy: "round-robin",
+  };
+  const parentCombo = {
+    name: "memory",
+    models: [
+      { kind: "combo-ref", id: "r1", comboName: "qwen38-local", params: { maxTokens: 12288, thinking: "off" } },
+      { kind: "model", id: "m1", model: "openrouter/deepseek/deepseek-v4.1-flash" },
+    ],
+    strategy: "priority",
+  };
+  const targets = resolveNestedComboTargets(parentCombo, [parentCombo, nestedCombo]);
+  const qwenTargets = targets.filter((t: any) => String(t.modelStr).includes("qwen"));
+  assert.equal(qwenTargets.length, 2);
+  for (const t of qwenTargets) {
+    assert.deepEqual(t.params, { maxTokens: 12288, thinking: "off" });
+  }
+  // nested's own 999/thinking:on must NOT survive on the qwen38a100 target
+  const a = qwenTargets.find((t: any) => t.modelStr.includes("qwen38a100/"));
+  assert.notEqual(a.params?.maxTokens, 999);
+});
+test("ref params: no ref params → nested model-step params survive untouched", async () => {
+  const { resolveNestedComboTargets } = await import("../../open-sse/services/combo/comboStructure.ts");
+  const nestedCombo = {
+    name: "qwen38-local",
+    models: [
+      { kind: "model", id: "a", model: "qwen38a100/qwen3.8-27b", params: { maxTokens: 4096 } },
+    ],
+    strategy: "round-robin",
+  };
+  const parentCombo = {
+    name: "parent",
+    models: [
+      { kind: "combo-ref", id: "r1", comboName: "qwen38-local" },
+    ],
+    strategy: "priority",
+  };
+  const targets = resolveNestedComboTargets(parentCombo, [parentCombo, nestedCombo]);
+  assert.equal(targets.length, 1);
+  assert.deepEqual(targets[0].params, { maxTokens: 4096 });
+});
+
 // ─── applyComboStepResponseGuards ───
 
 test("guards: non-stream JSON with empty content gets reasoning merged into content", async () => {

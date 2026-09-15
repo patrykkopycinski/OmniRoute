@@ -23,6 +23,14 @@ export const comboStepMetaSchema = {
   fallbackOnlyOnQuotaExhaustion: z.boolean().optional(),
 };
 
+export const comboStepParamsSchema = z
+  .object({
+    maxTokens: z.number().int().min(64).max(200000).optional(),
+    thinking: z.enum(["off"]).optional(),
+    extraBody: z.record(z.string(), z.unknown()).optional(),
+    mergeReasoningIntoContent: z.boolean().optional(),
+  })
+  .optional();
 export const comboModelStepInputSchema = z.object({
   kind: z.literal("model").optional(),
   provider: z.string().trim().min(1).max(120).optional(),
@@ -37,15 +45,7 @@ export const comboModelStepInputSchema = z.object({
   prompt: z.string().trim().min(1).max(20000).optional(),
   // Per-step request params (feat/combo-step-params): optional per-step
   // request shaping — token caps, thinking control, extra_body merges.
-  // Model steps only; combo-refs resolve to their own steps' params.
-  params: z
-    .object({
-      maxTokens: z.number().int().min(64).max(200000).optional(),
-      thinking: z.enum(["off"]).optional(),
-      extraBody: z.record(z.string(), z.unknown()).optional(),
-      mergeReasoningIntoContent: z.boolean().optional(),
-    })
-    .optional(),
+  params: comboStepParamsSchema,
   ...comboStepMetaSchema,
 });
 
@@ -53,6 +53,9 @@ export const comboRefStepInputSchema = z.object({
   kind: z.literal("combo-ref"),
   comboName: z.string().trim().min(1).max(100),
   ...comboStepMetaSchema,
+  // feat/combo-step-params: params on a combo-ref apply to EVERY model the
+  // ref expands to (parent's shape overrides the nested combo's own params).
+  params: comboStepParamsSchema,
 });
 
 // A combo entry can be a plain string (legacy), a legacy object, or a structured ComboStep.

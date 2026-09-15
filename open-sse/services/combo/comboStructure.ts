@@ -115,6 +115,9 @@ function normalizeRuntimeStep(
       weight,
       label,
       ...(step.fallbackOnlyOnQuotaExhaustion ? { fallbackOnlyOnQuotaExhaustion: true } : {}),
+      // feat/combo-step-params: ref-level params override nested-step params
+      // for every target this ref expands to.
+      ...(step.params ? { params: step.params } : {}),
     };
   }
 
@@ -312,7 +315,13 @@ export function resolveNestedComboTargets(
 
   for (const step of runtimeSteps) {
     if (step.kind === "combo-ref") {
-      resolved.push(...expandRuntimeStep(step, allCombos, new Set(visited), depth, path, maxDepth));
+      // feat/combo-step-params: params on the ref OVERRIDE params on the
+      // nested combo's own model steps (parent's shape wins per use-site).
+      const expanded = expandRuntimeStep(step, allCombos, new Set(visited), depth, path, maxDepth);
+      for (const t of expanded) {
+        if (step.params && t.kind === "model") resolved.push({ ...t, params: step.params });
+        else resolved.push(t);
+      }
       continue;
     }
     resolved.push(step);
