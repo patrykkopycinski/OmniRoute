@@ -183,6 +183,103 @@ test("ref params: no ref params → nested model-step params survive untouched",
   assert.deepEqual(targets[0].params, { maxTokens: 4096 });
 });
 
+// ─── execute-mode (runtimeUnits) params ───
+test("execute: model unit applies params to a body copy (shared body untouched)", async () => {
+  const { executeRuntimeUnitCombo } = await import("../../open-sse/services/combo/runtimeUnits.ts");
+  const sharedBody: Record<string, unknown> = { max_tokens: 64000 };
+  const seen: Array<Record<string, unknown>> = [];
+  const handleSingleModel = async (body: Record<string, unknown>) => {
+    seen.push(body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const combo = { name: "t", models: [], strategy: "priority", config: {} };
+  await executeRuntimeUnitCombo({
+    body: sharedBody,
+    combo,
+    strategy: "priority",
+    units: [{
+      kind: "model", stepId: "s1", executionKey: "k1",
+      modelStr: "qwen38a100/qwen3.8-27b", provider: "qwen38a100", providerId: null,
+      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
+      label: null, weight: 0,
+      params: { maxTokens: 12288, thinking: "off" },
+    } as never],
+    handleSingleModel: handleSingleModel as never,
+    log: { info() {}, warn() {}, error() {} } as never,
+    config: { maxRetries: 0 },
+    allCombos: [],
+    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    baseOptions: {} as never,
+    runCombo: (async () => new Response("x")) as never,
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].max_tokens, 12288, "cap applied on dispatch body");
+  assert.deepEqual(Object.keys(seen[0]).includes("chat_template_kwargs"), true, "thinking knob present");
+  assert.equal(sharedBody.max_tokens, 64000, "shared body MUST stay untouched");
+});
+test("execute: response guard merges empty-content + reasoning before quality check", async () => {
+  const { executeRuntimeUnitCombo } = await import("../../open-sse/services/combo/runtimeUnits.ts");
+  const handleSingleModel = async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "", reasoning_content: "facts" } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  const combo = { name: "t", models: [], strategy: "priority", config: {} };
+  const out = await executeRuntimeUnitCombo({
+    body: {},
+    combo,
+    strategy: "priority",
+    units: [{
+      kind: "model", stepId: "s1", executionKey: "k1",
+      modelStr: "m", provider: "p", providerId: null,
+      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
+      label: null, weight: 0,
+      params: { mergeReasoningIntoContent: true },
+    } as never],
+    handleSingleModel: handleSingleModel as never,
+    log: { info() {}, warn() {}, error() {} } as never,
+    config: { maxRetries: 0 },
+    allCombos: [],
+    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    baseOptions: {} as never,
+    runCombo: (async () => new Response("x")) as never,
+  });
+  const parsed = await out.response.clone().json();
+  assert.equal(parsed.choices[0].message.content, "facts");
+  assert.equal(parsed.choices[0].message.reasoning_content, undefined);
+});
+test("execute: no params → body passed through verbatim (no shaping)", async () => {
+  const { executeRuntimeUnitCombo } = await import("../../open-sse/services/combo/runtimeUnits.ts");
+  const seen: Array<Record<string, unknown>> = [];
+  const handleSingleModel = async (body: Record<string, unknown>) => {
+    seen.push(body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const combo = { name: "t", models: [], strategy: "priority", config: {} };
+  await executeRuntimeUnitCombo({
+    body: { temperature: 0.7 },
+    combo,
+    strategy: "priority",
+    units: [{
+      kind: "model", stepId: "s1", executionKey: "k1",
+      modelStr: "m", provider: "p", providerId: null,
+      connectionId: null, allowedConnectionIds: null, tags: null, prompt: null, fingerprint: null,
+      label: null, weight: 0,
+    } as never],
+    handleSingleModel: handleSingleModel as never,
+    log: { info() {}, warn() {}, error() {} } as never,
+    config: { maxRetries: 0 },
+    allCombos: [],
+    nesting: { depth: 0, maxDepth: 3, visitedComboNames: ["t"], attemptBudget: { count: 0, limit: 10 } } as never,
+    baseOptions: {} as never,
+    runCombo: (async () => new Response("x")) as never,
+  });
+  assert.deepEqual(seen[0], { temperature: 0.7 });
+});
+
 // ─── applyComboStepResponseGuards ───
 
 test("guards: non-stream JSON with empty content gets reasoning merged into content", async () => {
