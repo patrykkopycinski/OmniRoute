@@ -18,6 +18,7 @@ import {
   AGENTIC_STALL_SIGNATURE,
   classifyAgenticStallResponse,
   contentLooksLikeStallNarration,
+  isIntentionalSilenceNarration,
   requestExpectsToolCall,
 } from "../../open-sse/services/combo/agenticStall.ts";
 
@@ -175,6 +176,55 @@ describe("contentLooksLikeStallNarration", () => {
   test("empty content → NOT stall shape (quality gates own that case)", () => {
     assert.equal(contentLooksLikeStallNarration(""), false);
     assert.equal(contentLooksLikeStallNarration("   "), false);
+  });
+});
+
+// ── intentional-silence exemption (2026-09-16 live 502) ──
+// Live specimen: Hermes cron pr-review-sweep bf38b6c2cff6 — tool result
+// "sweep complete: 11 PR(s) examined, 0 unanswered thread(s)", every combo
+// member answered exactly "[SILENT]" (the run's documented nothing-to-report
+// reply), the guard failed all five over and the customer saw HTTP 502.
+describe("intentional-silence tokens are NOT stalls", () => {
+  test("live specimen: exact '[SILENT]' → NOT stall shape", () => {
+    assert.equal(contentLooksLikeStallNarration("[SILENT]"), false);
+  });
+
+  for (const [name, text] of [
+    ["bracketless SILENT", "SILENT"],
+    ["NO_REPLY", "NO_REPLY"],
+    ["NO REPLY", "NO REPLY"],
+    ["lower-case", "[silent]"],
+    ["padded", "\n  [SILENT]  \n"],
+    ["edge punctuation", "[SILENT]."],
+    ["marker on its own last line", "Sweep finished.\n[SILENT]"],
+    ["bracketed opener + note", "[SILENT] No changes detected this tick."],
+  ] as const) {
+    test(name, () => {
+      assert.equal(contentLooksLikeStallNarration(text), false, text);
+      assert.equal(isIntentionalSilenceNarration(text), true, text);
+    });
+  }
+
+  test("prose that merely mentions the token is still narration", () => {
+    assert.equal(isIntentionalSilenceNarration("Silent retry succeeded"), false);
+    assert.equal(
+      isIntentionalSilenceNarration("I told the job to answer [SILENT] next tick."),
+      false
+    );
+    assert.equal(isIntentionalSilenceNarration("Nothing to save."), false);
+  });
+
+  test("malformed bracket is not a marker", () => {
+    assert.equal(isIntentionalSilenceNarration("[SILENT"), false);
+  });
+
+  test("summary narration is still a stall (exemption stays narrow)", () => {
+    assert.equal(contentLooksLikeStallNarration(STALL_TEXT), true);
+    assert.equal(contentLooksLikeStallNarration("Nothing to save."), true);
+  });
+
+  test("unrelated short prose is still a stall", () => {
+    assert.equal(contentLooksLikeStallNarration("Silent retry succeeded"), true);
   });
 });
 
@@ -343,6 +393,42 @@ describe("classifyAgenticStallResponse", () => {
     });
     assert.ok(verdict);
     assert.equal(verdict.signature, AGENTIC_STALL_SIGNATURE);
+  });
+
+  test("OpenAI SSE: exact '[SILENT]' silence token on a tool tail → NOT a stall", async () => {
+    const sse =
+      `data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n` +
+      `data: {"choices":[{"delta":{"content":"[SILENT]"},"finish_reason":null}]}\n\n` +
+      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
+      `data: [DONE]\n\n`;
+    const verdict = await classifyAgenticStallResponse({
+      body: openAiToolTailBody(),
+      response: sseResponse(sse),
+    });
+    assert.equal(verdict, null);
+  });
+
+  test("OpenAI JSON: exact '[SILENT]' silence token on a tool tail → NOT a stall", async () => {
+    const verdict = await classifyAgenticStallResponse({
+      body: openAiToolTailBody(),
+      response: jsonResponse({
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "[SILENT]" } }],
+      }),
+    });
+    assert.equal(verdict, null);
+  });
+
+  test("Anthropic SSE: '[SILENT]' text block + end_turn → NOT a stall", async () => {
+    const sse =
+      `event: message_start\ndata: {"type":"message_start"}\n\n` +
+      `event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"[SILENT]"}}\n\n` +
+      `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n` +
+      `event: message_stop\ndata: {"type":"message_stop"}\n\n`;
+    const verdict = await classifyAgenticStallResponse({
+      body: anthropicToolTailBody(),
+      response: sseResponse(sse),
+    });
+    assert.equal(verdict, null);
   });
 
   test("kill switch: OMNIROUTE_AGENTIC_STALL_FAILOVER=0 → never classifies", async () => {

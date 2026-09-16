@@ -21,6 +21,12 @@
  *     (`<summary>…`, `# Summary`, `Summary: …`) or short structureless prose
  *     with no actionable payload ("Nothing to save.").
  *
+ * Two terminal-protocol shapes are EXEMPT because their response is turn-over
+ * by design, not the summarization defect this guard exists to catch:
+ *  - a genuine blocked-state report ("Blocked: #291310 still OPEN"), and
+ *  - an intentional-silence token ("[SILENT]" / "NO_REPLY") — see
+ *    `isIntentionalSilenceNarration`.
+ *
  * The guard is provider-agnostic: it keys on request/response SHAPE, never on
  * model id (same lesson as the kimiToolCallNarration recovery — a model-id
  * gate silently skips every future imitator).
@@ -93,11 +99,83 @@ const SHORT_NARRATION_MAX_CHARS = 240;
 const BLOCKED_STATE_OPENER =
   /^\s*(?:still\s+|attempt\s+\d+[^\w\s]*(?:\s+blocked)?[.:]?\s+|blocked\s+again[.:]?\s+|blocked[.:,\s]|cannot\s+proceed[\s:—–-]|unable\s+to\s+(?:proceed|continue|complete)[\s:—–-]|no\s+(?:path|way)\s+forward[\s:—–-])/i;
 
+/** Intentional-silence control tokens emitted by autonomous agent harnesses
+ *  (Hermes cron/webhook lanes, bot mode) to suppress delivery when there is
+ *  nothing to report. Mirrors the harness's own marker set (Hermes
+ *  `gateway/response_filters.LIVE_GATEWAY_SILENT_MARKERS`) so the gateway and
+ *  the harness cannot drift on what counts as silence. Lower-cased; matching
+ *  is case-folded. */
+const SILENCE_MARKERS = new Set([
+  "[silent]",
+  "silent",
+  "no_reply",
+  "no reply",
+  "[静默]",
+  "静默",
+  "[沉默]",
+  "沉默",
+]);
+
+/** Bracketed marker OPENING the response — the autonomous lane's own prefix
+ *  rule, where "[SILENT] No changes detected this tick." still suppresses
+ *  delivery. Bracketed only: bare "Silent retry succeeded" must stay
+ *  classifiable as narration. */
+const SILENCE_MARKER_OPENER = /^\s*\[(?:silent|静默|沉默)\]/i;
+
+/** Drop stray edge punctuation (".NO_REPLY", "*SILENT*") while keeping brackets
+ *  structural, so a malformed "[SILENT" cannot become a marker. */
+function stripEdgeSilencePunctuation(text: string): string {
+  const keep = /[\p{L}[\]]/u;
+  let start = 0;
+  let end = text.length;
+  while (start < end && !keep.test(text[start])) start++;
+  while (end > start && !keep.test(text[end - 1])) end--;
+  return text.slice(start, end);
+}
+
+function isSilenceMarker(text: string): boolean {
+  const collapsed = text.trim().replace(/\s+/g, " ");
+  if (!collapsed) return false;
+  return (
+    SILENCE_MARKERS.has(collapsed.toLowerCase()) ||
+    SILENCE_MARKERS.has(stripEdgeSilencePunctuation(collapsed).toLowerCase())
+  );
+}
+
+/** True when the response IS an intentional-silence token — a harness
+ *  delivery-suppression control token, i.e. turn-over BY DESIGN.
+ *
+ *  Live defect (2026-09-16, Hermes cron `pr-review-sweep` bf38b6c2cff6): the
+ *  job's tool result reported "sweep complete: 11 PR(s) examined, 0 unanswered
+ *  thread(s)"; every combo member then answered exactly `[SILENT]` — the run's
+ *  documented "nothing to report" reply. The guard read stop+no-tool-call+
+ *  short narration as a stall, failed over through all five members, and the
+ *  client got HTTP 502 on a healthy, deterministic turn (it REPRODUCES on every
+ *  run with no unanswered threads). Same exemption class as
+ *  BLOCKED_STATE_OPENER: a deliberate terminal token, not summarization drift.
+ *
+ *  Exempt exactly what the harness itself treats as silence (whole response, or
+ *  its own first/last line, or a bracketed opener) — no wider. */
+export function isIntentionalSilenceNarration(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  if (SILENCE_MARKER_OPENER.test(t)) return true;
+  const lines = t
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return false;
+  return (
+    isSilenceMarker(t) || isSilenceMarker(lines[0]) || isSilenceMarker(lines[lines.length - 1])
+  );
+}
+
 export function contentLooksLikeStallNarration(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   if (SUMMARY_PREFIX.test(t)) return true;
   if (BLOCKED_STATE_OPENER.test(t)) return false; // terminal answer, not a stall
+  if (isIntentionalSilenceNarration(t)) return false; // delivery-suppression token, not a stall
   if (t.length <= SHORT_NARRATION_MAX_CHARS && !STRUCTURE_MARKERS.test(t) && !t.includes("\n\n")) {
     return true;
   }
