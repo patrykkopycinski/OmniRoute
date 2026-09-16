@@ -76,10 +76,7 @@ describe("requestExpectsToolCall", () => {
   });
 
   test("no tools → false (positive control: plain question)", () => {
-    assert.equal(
-      requestExpectsToolCall({ messages: [{ role: "tool", content: "x" }] }),
-      false
-    );
+    assert.equal(requestExpectsToolCall({ messages: [{ role: "tool", content: "x" }] }), false);
   });
 
   test("tools but tail is a plain user message → false", () => {
@@ -110,6 +107,38 @@ describe("requestExpectsToolCall", () => {
 });
 
 describe("contentLooksLikeStallNarration", () => {
+  // ── blocked-state exemption: terminal answers, not stalls ──
+  // Live prod specimens (elastic/kibana#291310 chain, 2026-09-16): three
+  // members each re-verified and reported a genuine blocker; the guard failed
+  // each over and the next member re-ran the same blocked task.
+  describe("blocked-state openers are NOT stalls", () => {
+    for (const [name, text] of [
+      ["blocked opener", "Blocked: #291310 still OPEN, no merged fix PR (verified via gh)"],
+      ["still blocked", "Still blocked: #291310 remains OPEN with no merged fix PR"],
+      [
+        "blocked again w/ attempt",
+        "Blocked again (attempt 5): elastic/kibana#291310 remains OPEN with no merged fix PR, so there is nothing new to verify.",
+      ],
+      ["attempt-prefixed", "Attempt 3: blocked. #291310 is still OPEN with no merged fix PR"],
+      ["cannot proceed", "Cannot proceed — CI is red on the base branch"],
+      [
+        "unable to proceed",
+        "Unable to proceed: the required secret is not available in this environment",
+      ],
+      ["no path forward", "No path forward until the upstream review lands"],
+    ] as const) {
+      test(name, () => {
+        assert.equal(contentLooksLikeStallNarration(text), false, text);
+      });
+    }
+    test("blocked mid-sentence does NOT exempt (opener must lead)", () => {
+      assert.equal(
+        contentLooksLikeStallNarration("I checked and found it blocked: nothing to do"),
+        true
+      );
+    });
+  });
+
   test("summary block → stall shape", () => {
     assert.equal(contentLooksLikeStallNarration(STALL_TEXT), true);
   });
@@ -134,10 +163,7 @@ describe("contentLooksLikeStallNarration", () => {
   });
 
   test("answer with code fence → NOT stall shape", () => {
-    assert.equal(
-      contentLooksLikeStallNarration("Apply this:\n```ts\nfoo();\n```"),
-      false
-    );
+    assert.equal(contentLooksLikeStallNarration("Apply this:\n```ts\nfoo();\n```"), false);
   });
 
   test("long prose answer → NOT stall shape", () => {
@@ -164,9 +190,7 @@ describe("classifyAgenticStallResponse", () => {
     const verdict = await classifyAgenticStallResponse({
       body: openAiToolTailBody(),
       response: jsonResponse({
-        choices: [
-          { finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } },
-        ],
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } }],
       }),
     });
     assert.ok(verdict);
@@ -196,9 +220,7 @@ describe("classifyAgenticStallResponse", () => {
     const verdict = await classifyAgenticStallResponse({
       body: openAiToolTailBody(),
       response: jsonResponse({
-        choices: [
-          { finish_reason: "length", message: { role: "assistant", content: STALL_TEXT } },
-        ],
+        choices: [{ finish_reason: "length", message: { role: "assistant", content: STALL_TEXT } }],
       }),
     });
     assert.equal(verdict, null);
@@ -223,9 +245,7 @@ describe("classifyAgenticStallResponse", () => {
     const verdict = await classifyAgenticStallResponse({
       body: { messages: [{ role: "user", content: "summarize this chat" }] },
       response: jsonResponse({
-        choices: [
-          { finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } },
-        ],
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } }],
       }),
     });
     assert.equal(verdict, null);
@@ -330,9 +350,7 @@ describe("classifyAgenticStallResponse", () => {
     const verdict = await classifyAgenticStallResponse({
       body: openAiToolTailBody(),
       response: jsonResponse({
-        choices: [
-          { finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } },
-        ],
+        choices: [{ finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } }],
       }),
     });
     assert.equal(verdict, null);
@@ -351,9 +369,7 @@ describe("classifyAgenticStallResponse", () => {
 
   test("original response body is NOT consumed (clone-only contract)", async () => {
     const response = jsonResponse({
-      choices: [
-        { finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } },
-      ],
+      choices: [{ finish_reason: "stop", message: { role: "assistant", content: STALL_TEXT } }],
     });
     const verdict = await classifyAgenticStallResponse({
       body: openAiToolTailBody(),

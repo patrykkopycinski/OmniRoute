@@ -84,15 +84,21 @@ const STRUCTURE_MARKERS = /```|^\s*(?:[-*•+]|\d+[.)])\s|^\s*#{1,6}\s|\|\s*-{2,
  *  unless it opens as a summary. */
 const SHORT_NARRATION_MAX_CHARS = 240;
 
+/** Terminal blocked-state openers: the model did its tool work and is reporting
+ *  a genuine blocker as its final answer ("Blocked: #291310 still OPEN...",
+ *  "Cannot proceed — CI red"). This is turn-over BY DESIGN, not a stall;
+ *  failing over re-runs the same blocked task on the next member and each
+ *  member re-verifies and re-reports (live: 3 members × gh verification on
+ *  elastic/kibana#291310, 2026-09-16). Exempt before the short-prose branch. */
+const BLOCKED_STATE_OPENER =
+  /^\s*(?:still\s+|attempt\s+\d+[^\w\s]*(?:\s+blocked)?[.:]?\s+|blocked\s+again[.:]?\s+|blocked[.:,\s]|cannot\s+proceed[\s:—–-]|unable\s+to\s+(?:proceed|continue|complete)[\s:—–-]|no\s+(?:path|way)\s+forward[\s:—–-])/i;
+
 export function contentLooksLikeStallNarration(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   if (SUMMARY_PREFIX.test(t)) return true;
-  if (
-    t.length <= SHORT_NARRATION_MAX_CHARS &&
-    !STRUCTURE_MARKERS.test(t) &&
-    !t.includes("\n\n")
-  ) {
+  if (BLOCKED_STATE_OPENER.test(t)) return false; // terminal answer, not a stall
+  if (t.length <= SHORT_NARRATION_MAX_CHARS && !STRUCTURE_MARKERS.test(t) && !t.includes("\n\n")) {
     return true;
   }
   return false;
