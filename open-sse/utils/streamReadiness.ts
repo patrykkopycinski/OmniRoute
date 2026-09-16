@@ -486,12 +486,34 @@ function prependBufferedChunks(
   });
 }
 
+/** Rejection message used by `readWithTimeout` when its idle window expires.
+ *  It must stay a sentinel: `reader.read()` rejects on the SAME promise for
+ *  genuine upstream failures (socket reset, TLS/HTTP2 abort, client cancel), so
+ *  the call site has to tell the two apart before blaming its own window. */
+const STREAM_READINESS_WINDOW_EXPIRED = "STREAM_READINESS_TIMEOUT";
+
+function isReadinessWindowExpiry(error: unknown): boolean {
+  return error instanceof Error && error.message === STREAM_READINESS_WINDOW_EXPIRED;
+}
+
+/** Best-effort description of a reader rejection, for logs and diagnostics. */
+function describeStreamReadError(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = (error as { cause?: unknown }).cause;
+    const causeText = cause instanceof Error && cause.message ? ` (cause: ${cause.message})` : "";
+    const name = error.name && error.name !== "Error" ? `${error.name}: ` : "";
+    return `${name}${error.message || "no message"}${causeText}`;
+  }
+  if (typeof error === "string" && error) return error;
+  return "unrecognized reader rejection";
+}
+
 function readWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("STREAM_READINESS_TIMEOUT")), timeoutMs);
+    const timeout = setTimeout(() => reject(new Error(STREAM_READINESS_WINDOW_EXPIRED)), timeoutMs);
     reader.read().then(
       (value) => {
         clearTimeout(timeout);
@@ -578,7 +600,38 @@ export async function ensureStreamReadiness(
       let readResult: ReadableStreamReadResult<Uint8Array>;
       try {
         readResult = await readWithTimeout(reader, remainingMs);
-      } catch {
+      } catch (error) {
+        // Two very different failures land here. Blaming the idle window for
+        // both made a sub-second upstream abort report as "no non-ping SSE event
+        // within 90000ms", which sent triage chasing a stall that never
+        // happened (observed: 25% of cursor/kimi-k3-high 504s at 107ms-12s).
+        if (!isReadinessWindowExpiry(error)) {
+          const cause = sanitizeErrorMessage(describeStreamReadError(error)).trim();
+          const classificationReason =
+            "Upstream stream failed before producing a non-ping SSE event";
+          const reason = cause ? `${classificationReason}: ${cause}` : classificationReason;
+          options.log?.warn?.(
+            "STREAM",
+            `${reason} (${options.provider || "provider"}/${options.model || "unknown"})`
+          );
+          await reader.cancel(reason).catch(() => {});
+          return {
+            ok: false,
+            reason,
+            classificationReason,
+            ...(cause ? { upstreamDiagnostic: cause } : {}),
+            code: "STREAM_UPSTREAM_ERROR",
+            type: "stream_upstream_error",
+            response: createErrorResponse(
+              HTTP_STATUS.BAD_GATEWAY,
+              classificationReason,
+              "STREAM_UPSTREAM_ERROR",
+              "stream_upstream_error",
+              cause || undefined
+            ),
+          };
+        }
+
         const reason = timeoutReason();
         options.log?.warn?.(
           "STREAM",
