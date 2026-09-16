@@ -1,4 +1,5 @@
 {
+  "_rebaseline_2026_09_16_13627_kv_after_text_grace": "PR #13627 own growth: open-sse/executors/cursor.ts 1759->1770 (+11, after extracting all grace-timer machinery into cursor/kvAfterTextGrace.ts under cap and deleting a dead reopensTurn branch the original commit left behind — it set ctx.endReason to the exact same value an unconditional, pre-existing line two statements later already sets, so removing it changes no behavior). The kv_after_text soft-terminator fix (namespace import, one grace-state handle, one settleNow helper, one call site) is irreducible plumbing at driveH2's single scan-loop settle point; the decision logic, comments and KV_GRACE_MS constant all live in the new module. Covered by tests/unit/cursor-composer-kv-toolcall-race.test.ts.",
   "_rebaseline_2026_09_15_13572_combined_growth": "Combined growth of the 2026-09-15 maxmad64bis uplift batch (each PR rebaselined its own growth; the merged sum is larger): open-sse/executors/base.ts->1754. Every hunk is flag-gated or a verified fix covered by that PR's tests; see the batch report.",
   "_rebaseline_2026_09_15_13445_combined_growth": "Combined growth of the 2026-09-15 maxmad64bis uplift batch (each PR rebaselined its own growth; the merged sum is larger): open-sse/utils/proxyFetch.ts->1296. Every hunk is flag-gated or a verified fix covered by that PR's tests; see the batch report.",
   "_rebaseline_2026_09_15_13643_combined_growth": "Combined growth of the 2026-09-15 maxmad64bis uplift batch (each PR rebaselined its own growth; the merged sum is larger): open-sse/executors/codex.ts->1528. Every hunk is flag-gated or a verified fix covered by that PR's tests; see the batch report.",
@@ -455,7 +456,7 @@
     "open-sse/executors/base.ts": 1754,
     "open-sse/executors/chatgpt-web.ts": 5056,
     "open-sse/executors/codex.ts": 1528,
-    "open-sse/executors/cursor.ts": 1759,
+    "open-sse/executors/cursor.ts": 1770,
     "open-sse/executors/muse-spark-web.ts": 1405,
     "open-sse/handlers/chatCore.ts": 6146,
     "open-sse/handlers/imageGeneration.ts": 3293,
