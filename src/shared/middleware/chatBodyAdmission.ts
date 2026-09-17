@@ -38,14 +38,16 @@ import {
   type IngestBudgetAcquireResult,
 } from "./ingestByteAdmission";
 import {
+  checkResourcePressureGuard,
   getResourcePressureObservation,
   resourcePressureRetryAfterSeconds,
   type PressureReason,
   type PressureSeverity,
+  type ResourcePressureCheckOptions,
+  type ResourcePressureGuardResult,
 } from "@omniroute/open-sse/utils/resourcePressure.ts";
 
 const MB = 1024 * 1024;
-
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value), 10);
@@ -239,6 +241,26 @@ export function defaultPressureSeverity(): PressureSeverity {
     return getResourcePressureObservation().state.severity;
   } catch {
     return "normal";
+  }
+}
+
+/**
+ * Drive the process-wide pressure runtime (the SAMPLER PUMP) and return its
+ * verdict for this request's weight.
+ *
+ * `ResourcePressureRuntime.check()` is the only thing that ever schedules a
+ * sampler refresh, so this call is what keeps `defaultPressureSeverity()`'s
+ * cached observation moving. Sampling failures must never cause a false shed:
+ * a throw here degrades to "no verdict", leaving the decision to the
+ * controller's own severity probe exactly as before.
+ */
+export function defaultPressureCheck(
+  options: ResourcePressureCheckOptions = {}
+): ResourcePressureGuardResult | null {
+  try {
+    return checkResourcePressureGuard(options);
+  } catch {
+    return null;
   }
 }
 
@@ -1038,6 +1060,15 @@ export async function admitChatRequest(
      * a deterministic snapshot.
      */
     pressureDetail?: () => ChatAdmissionPressureDetail;
+    /**
+     * The sampler pump + pressure verdict for this request's weight. Defaults to
+     * the process-wide runtime (`checkResourcePressureGuard`). Injected by tests
+     * that must observe the declared weight without a live singleton. Whatever is
+     * passed here is CALLED ON EVERY REQUEST — it is the only pump of the
+     * pressure sampler on this path, so a stub that never samples reproduces the
+     * frozen-observation defect this seam exists to prevent.
+     */
+    pressureCheck?: (options?: ResourcePressureCheckOptions) => ResourcePressureGuardResult | null;
   } = {}
 ): Promise<ChatRequestAdmission> {
   const sessionId = options.sessionId ?? resolveSessionId(request);
@@ -1096,22 +1127,45 @@ export async function admitChatRequest(
   // continues down the normal byte/structure path. Weight is judged from the
   // declared Content-Length here (the body has not been read yet); an undeclared
   // chunked body classifies heavy because it cannot be proven small.
-  if (controller.pressureSeverity() === "critical") {
-    // The gate's own `largeBodyBytes` IS the "big body" line for this call, so the
-    // classifier is bounded by it rather than by the module default — otherwise a
-    // deployment that lowers the threshold would still admit what it calls heavy.
-    const weight = classifyChatPressureWeight(
-      { bodyBytes: contentLength },
-      { ...DEFAULT_CHAT_PRESSURE_BOUNDS, largeBodyBytes }
-    );
-    if (weight === "heavy") {
-      const pressure = (options.pressureDetail ?? defaultPressureDetail)();
-      controller.recordShed("resource_pressure", sessionId, pressure);
-      return {
-        admit: false,
-        response: resourcePressureRejectionResponse(pressure.retryAfterSeconds),
-      };
-    }
+  //
+  // The gate's own `largeBodyBytes` IS the "big body" line for this call, so the
+  // classifier is bounded by it rather than by the module default — otherwise a
+  // deployment that lowers the threshold would still admit what it calls heavy.
+  const weight = classifyChatPressureWeight(
+    { bodyBytes: contentLength },
+    { ...DEFAULT_CHAT_PRESSURE_BOUNDS, largeBodyBytes }
+  );
+  // ⚠️ Drive the pressure runtime on EVERY request, before any decision —
+  // `ResourcePressureRuntime.check()` is the ONLY pump of the sampler
+  // (`scheduleRefresh()` is called from exactly one place, inside it; there is
+  // no timer). This gate used to decide from `controller.pressureSeverity()`
+  // alone, a CACHED read that never samples, and it returns before the request
+  // can reach the adaptive-admission runtime (`runtime.acquire()`, the only
+  // other pump on this path). A burst of purely HEAVY traffic under critical
+  // pressure therefore froze the observation: `state` stayed `critical` after
+  // the heap had fully recovered and this gate kept shedding, with nothing left
+  // to move it back to `normal`. Gating the pump on an already-critical state
+  // would be the same bug one step removed — the gate could never watch pressure
+  // BUILD. The weight goes INTO `check()` so a light request still pumps while
+  // its verdict is dropped before a 503 is built or logged; never short-circuit
+  // the pump for light traffic.
+  const pressureGuard = (options.pressureCheck ?? defaultPressureCheck)({
+    requestWeight: weight,
+  });
+  // A non-null guard is by construction a critical verdict on a heavy request.
+  // The controller's own severity probe stays an independent shed source: it is
+  // the seam callers (and the production singleton) wire this gate to, and it
+  // reflects the observation the pump above has just refreshed.
+  if (
+    weight === "heavy" &&
+    (pressureGuard !== null || controller.pressureSeverity() === "critical")
+  ) {
+    const pressure = (options.pressureDetail ?? defaultPressureDetail)();
+    controller.recordShed("resource_pressure", sessionId, pressure);
+    return {
+      admit: false,
+      response: resourcePressureRejectionResponse(pressure.retryAfterSeconds),
+    };
   }
 
   if (contentLength !== null && contentLength > hardMaxBytes) {
