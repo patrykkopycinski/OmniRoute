@@ -18,6 +18,7 @@ import {
   AGENTIC_STALL_SIGNATURE,
   classifyAgenticStallResponse,
   contentLooksLikeStallNarration,
+  isInstructedTerminalEcho,
   isIntentionalSilenceNarration,
   requestExpectsToolCall,
 } from "../../open-sse/services/combo/agenticStall.ts";
@@ -225,6 +226,120 @@ describe("intentional-silence tokens are NOT stalls", () => {
 
   test("unrelated short prose is still a stall", () => {
     assert.equal(contentLooksLikeStallNarration("Silent retry succeeded"), true);
+  });
+});
+
+// ── lane-instructed terminal literals (2026-09-16 follow-up) ──
+// Live specimen: Hermes' background-review lane briefs the model "If nothing is
+// worth saving, just say 'Nothing to save.' and stop." Every combo member
+// answered exactly that and the guard failed the turn over through the whole
+// combo. The response is turn-over BY DESIGN because the REQUEST asked for that
+// exact literal — a different class from the drift the guard exists to catch.
+describe("lane-instructed terminal literals are NOT stalls", () => {
+  const brief = (instruction: string) => ({
+    model: "some/model",
+    tools: TOOLS,
+    messages: [
+      // The lane brief sits earlier in the conversation; the TAIL must be the
+      // tool result or requestExpectsToolCall() gates the guard off entirely.
+      { role: "system", content: instruction },
+      { role: "user", content: "fix the bug" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+      { role: "tool", tool_call_id: "c1", content: "file contents…" },
+    ],
+  });
+
+  test("live specimen: brief quotes the literal, response echoes it → NOT a stall", () => {
+    const body = brief(
+      "Review the conversation above and update the skill library. If nothing is worth " +
+        "saving, just say 'Nothing to save.' and stop."
+    );
+    assert.equal(isInstructedTerminalEcho(body, "Nothing to save."), true);
+  });
+
+  test("case-insensitive and whitespace-normalised echo still matches", () => {
+    const body = brief("Otherwise reply  \"No output requested\"  and stop.");
+    assert.equal(isInstructedTerminalEcho(body, "no output requested"), true);
+    assert.equal(isInstructedTerminalEcho(body, "  No   Output Requested  "), true);
+  });
+
+  test("the SAME text is still a stall when the brief never asked for it", () => {
+    const body = brief("Summarise the sweep results.");
+    assert.equal(isInstructedTerminalEcho(body, "Nothing to save."), false);
+    assert.equal(contentLooksLikeStallNarration("Nothing to save."), true);
+  });
+
+  test("drift prose is never exempt, even when a literal exists in the brief", () => {
+    const body = brief("If nothing is worth saving, just say 'Nothing to save.' and stop.");
+    assert.equal(isInstructedTerminalEcho(body, STALL_TEXT), false);
+    assert.equal(isInstructedTerminalEcho(body, "Silent retry succeeded"), false);
+  });
+
+  test("substring is not a match — the whole response must be the literal", () => {
+    const body = brief("If nothing is worth saving, just say 'Nothing to save.' and stop.");
+    assert.equal(isInstructedTerminalEcho(body, "Nothing to save. But I did find one thing."), false);
+  });
+
+  test("over-long literals are rejected by the cap (no paragraph exemptions)", () => {
+    const long = "x".repeat(200);
+    const body = brief(`If nothing is worth saving, just say '${long}' and stop.`);
+    assert.equal(isInstructedTerminalEcho(body, long), false);
+  });
+
+  test("no quoted literal in the brief → exemption cannot fire", () => {
+    assert.equal(isInstructedTerminalEcho(brief("Say nothing at all."), "Nothing to save."), false);
+    assert.equal(isInstructedTerminalEcho(null, "Nothing to save."), false);
+    assert.equal(isInstructedTerminalEcho({}, "Nothing to save."), false);
+  });
+
+  test("Anthropic content-block briefs are scanned too", () => {
+    const body = {
+      model: "some/model",
+      tools: TOOLS,
+      messages: [
+        { role: "user", content: [{ type: "text", text: "just say 'Nothing to save.' and stop" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file" }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      ],
+    };
+    assert.equal(isInstructedTerminalEcho(body, "Nothing to save."), true);
+  });
+
+  test("classify: instructed echo over SSE → null (no failover)", async () => {
+    const verdict = await classifyAgenticStallResponse({
+      body: brief("If nothing is worth saving, just say 'Nothing to save.' and stop."),
+      response: sseResponse(
+        `data: {"choices":[{"delta":{"content":"Nothing to save."},"finish_reason":null}]}\n\n` +
+          `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
+          `data: [DONE]\n\n`
+      ),
+    });
+    assert.equal(verdict, null);
+  });
+
+  test("classify: instructed echo over JSON → null (no failover)", async () => {
+    const verdict = await classifyAgenticStallResponse({
+      body: brief("If nothing is worth saving, just say 'Nothing to save.' and stop."),
+      response: jsonResponse({
+        choices: [
+          { finish_reason: "stop", message: { role: "assistant", content: "Nothing to save." } },
+        ],
+      }),
+    });
+    assert.equal(verdict, null);
+  });
+
+  test("classify: same echo WITHOUT the brief → STALL (control)", async () => {
+    const verdict = await classifyAgenticStallResponse({
+      body: brief("Summarise the sweep results."),
+      response: jsonResponse({
+        choices: [
+          { finish_reason: "stop", message: { role: "assistant", content: "Nothing to save." } },
+        ],
+      }),
+    });
+    assert.ok(verdict);
+    assert.equal(verdict.signature, AGENTIC_STALL_SIGNATURE);
   });
 });
 

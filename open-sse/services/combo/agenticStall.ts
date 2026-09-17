@@ -21,11 +21,14 @@
  *     (`<summary>…`, `# Summary`, `Summary: …`) or short structureless prose
  *     with no actionable payload ("Nothing to save.").
  *
- * Two terminal-protocol shapes are EXEMPT because their response is turn-over
+ * Three terminal-protocol shapes are EXEMPT because their response is turn-over
  * by design, not the summarization defect this guard exists to catch:
- *  - a genuine blocked-state report ("Blocked: #291310 still OPEN"), and
+ *  - a genuine blocked-state report ("Blocked: #291310 still OPEN"),
  *  - an intentional-silence token ("[SILENT]" / "NO_REPLY") — see
- *    `isIntentionalSilenceNarration`.
+ *    `isIntentionalSilenceNarration`, and
+ *  - a literal the REQUEST ITSELF quoted as the required terminal reply
+ *    ("just say 'Nothing to save.' and stop") — see
+ *    `isInstructedTerminalEcho`.
  *
  * The guard is provider-agnostic: it keys on request/response SHAPE, never on
  * model id (same lesson as the kimiToolCallNarration recovery — a model-id
@@ -85,9 +88,10 @@ const SUMMARY_PREFIX =
  *  Its presence keeps the short-prose heuristic from firing. */
 const STRUCTURE_MARKERS = /```|^\s*(?:[-*•+]|\d+[.)])\s|^\s*#{1,6}\s|\|\s*-{2,}/m;
 
-/** Max length for the "short structureless narration" branch ("Nothing to
- *  save." — 16 chars). Kept small: longer prose is a legitimate final answer
- *  unless it opens as a summary. */
+/** Max length for the "short structureless narration" branch. Kept small:
+ *  longer prose is a legitimate final answer unless it opens as a summary.
+ *  Lane-instructed terminal literals ("Nothing to save.") are handled earlier by
+ *  `isInstructedTerminalEcho`, so this branch is now genuinely about drift. */
 const SHORT_NARRATION_MAX_CHARS = 240;
 
 /** Terminal blocked-state openers: the model did its tool work and is reporting
@@ -168,6 +172,69 @@ export function isIntentionalSilenceNarration(text: string): boolean {
   return (
     isSilenceMarker(t) || isSilenceMarker(lines[0]) || isSilenceMarker(lines[lines.length - 1])
   );
+}
+
+/** Max length of a response that can count as an instructed terminal echo. The
+ *  lane briefs that produce these are one-line control replies; anything longer
+ *  is prose, and prose drift is the defect this guard exists to catch. */
+const INSTRUCTED_TERMINAL_MAX_CHARS = 120;
+
+/** Literal text a request quoted as a required reply, e.g. Hermes'
+ *  background-review lane: "just say 'Nothing to save.' and stop."
+ *
+ *  Quotes must be single/double/backtick and contain no sentence punctuation of
+ *  its own, so prose quotes in a brief ("say 'unable to proceed'") cannot turn a
+ *  whole paragraph into an exempt literal. Returns lower-cased candidates. */
+function quotedTerminalLiterals(body: unknown): Set<string> {
+  const found = new Set<string>();
+  if (!isRecord(body)) return found;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const push = (raw: string) => {
+    const lit = raw.trim().replace(/\s+/g, " ");
+    if (!lit || lit.length > INSTRUCTED_TERMINAL_MAX_CHARS) return;
+    found.add(lit.toLowerCase());
+  };
+  for (const msg of messages) {
+    if (!isRecord(msg)) continue;
+    const contents = Array.isArray(msg.content) ? msg.content : [msg.content];
+    for (const part of contents) {
+      let text = "";
+      if (typeof part === "string") text = part;
+      else if (isRecord(part)) {
+        if (typeof part.text === "string") text = part.text;
+        else if (typeof part.content === "string") text = part.content;
+      }
+      if (!text) continue;
+      // '...' | "..." | `...`
+      for (const m of text.matchAll(/['"`]([^'"`\n]{1,120})['"`]/g)) push(m[1]);
+    }
+  }
+  return found;
+}
+
+/** True when the response is EXACTLY a literal the request itself told the model
+ *  to reply with. This is a lane-instructed terminal token — turn-over by design,
+ *  like the silence markers but without a fixed global vocabulary, so new lanes
+ *  ("Nothing to save.", "[No output requested]") are covered without a code
+ *  change per lane.
+ *
+ *  Live defect (2026-09-16, kanban t_1ebaf474 follow-up): Hermes'
+ *  background-review lane briefs the model "If nothing is worth saving, just say
+ *  'Nothing to save.' and stop." Every combo member answered exactly that; the
+ *  guard read stop + no-tool-call + short prose as a stall and failed the turn
+ *  over through the whole combo.
+ *
+ *  Deliberately narrow — requires a verbatim, case-insensitive, whole-response
+ *  match against a literal present in the request, under a length cap. A model
+ *  drifting into a summary cannot satisfy it: summarization text is not quoted
+ *  in the brief. If the brief contains no literal, this returns false and the
+ *  normal short-prose/gated path is unchanged. */
+export function isInstructedTerminalEcho(body: unknown, text: string): boolean {
+  const t = (text || "").trim().replace(/\s+/g, " ");
+  if (!t || t.length > INSTRUCTED_TERMINAL_MAX_CHARS) return false;
+  const literals = quotedTerminalLiterals(body);
+  if (literals.size === 0) return false;
+  return literals.has(t.toLowerCase());
 }
 
 export function contentLooksLikeStallNarration(text: string): boolean {
@@ -364,6 +431,7 @@ export async function classifyAgenticStallResponse(args: {
     const finish = (signal.finishReason || "").toLowerCase();
     if (finish !== "stop" && finish !== "end_turn") return null;
     if (signal.hasToolCalls) return null;
+    if (isInstructedTerminalEcho(body, signal.text)) return null;
     if (!contentLooksLikeStallNarration(signal.text)) return null;
     const head = signal.text.trim().slice(0, 120).replace(/\s+/g, " ");
     return {
