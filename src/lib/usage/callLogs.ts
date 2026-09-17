@@ -131,11 +131,23 @@ type DeleteResult = {
 };
 
 let logIdCounter = 0;
-
+// Cross-process-safe id: Date.now()+counter alone can collide when multiple
+// omniroute containers (canary fleet) share one storage.sqlite and restart
+// near-simultaneously, resetting logIdCounter to 0 at the same millisecond.
+// A short random suffix makes same-ms same-counter collisions statistically
+// impossible across processes without changing the id sortable prefix.
 function generateLogId() {
   logIdCounter++;
-  return `${Date.now()}-${logIdCounter}`;
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${Date.now()}-${logIdCounter}-${rand}`;
 }
+// Test-only hook: lets tests reset the module-local counter to simulate a
+// fresh process (e.g. a canary container restart) without spawning a real
+// child process, so the cross-process id-collision regression is reproducible.
+export function __resetLogIdCounterForTest() {
+  logIdCounter = 0;
+}
+export { generateLogId };
 
 async function resolveAccountName(connectionId: string | null | undefined) {
   let account = connectionId ? connectionId.slice(0, 8) : "-";
