@@ -39,8 +39,13 @@ import {
 } from "./ingestByteAdmission";
 import {
   getResourcePressureObservation,
+  resourcePressureRetryAfterSeconds,
+  type PressureReason,
   type PressureSeverity,
 } from "@omniroute/open-sse/utils/resourcePressure.ts";
+
+const MB = 1024 * 1024;
+
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value), 10);
@@ -52,15 +57,32 @@ function parseNonNegativeInt(value: string | undefined, fallback: number): numbe
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-export const CHAT_LARGE_BODY_BYTES = parsePositiveInt(
-  process.env.OMNIROUTE_CHAT_LARGE_BODY_BYTES,
-  256 * 1024
-);
+import {
+  CHAT_HEAVY_ESTIMATED_TOKENS,
+  CHAT_HEAVY_MESSAGE_COUNT,
+  CHAT_HEAVY_TOOL_COUNT,
+  CHAT_LARGE_BODY_BYTES,
+  DEFAULT_CHAT_PRESSURE_BOUNDS,
+  classifyChatPressureWeight,
+} from "./chatPressureWeight";
 
 export const CHAT_HARD_MAX_BODY_BYTES = parsePositiveInt(
   process.env.OMNIROUTE_CHAT_HARD_MAX_BODY_BYTES,
   50 * 1024 * 1024
 );
+
+/**
+ * The structure/byte thresholds that decide whether a request is "heavy" live
+ * in `chatPressureWeight.ts` — the single definition shared with the
+ * provider-work pressure guards. Re-exported here because every existing
+ * importer (and the admission tests) reads them from this module.
+ */
+export {
+  CHAT_HEAVY_ESTIMATED_TOKENS,
+  CHAT_HEAVY_MESSAGE_COUNT,
+  CHAT_HEAVY_TOOL_COUNT,
+  CHAT_LARGE_BODY_BYTES,
+};
 
 export const CHAT_MAX_HEAVY_IN_FLIGHT = parsePositiveInt(
   process.env.OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT,
@@ -101,18 +123,12 @@ export const CHAT_ADMISSION_MAX_QUEUED_BYTES = parsePositiveInt(
  */
 export const CHAT_ADMISSION_RETRY_AFTER_MAX_SECONDS = 60;
 
-export const CHAT_HEAVY_MESSAGE_COUNT = parsePositiveInt(
-  process.env.OMNIROUTE_CHAT_HEAVY_MESSAGE_COUNT,
-  200
-);
-export const CHAT_HEAVY_TOOL_COUNT = parsePositiveInt(
-  process.env.OMNIROUTE_CHAT_HEAVY_TOOL_COUNT,
-  64
-);
-export const CHAT_HEAVY_ESTIMATED_TOKENS = parsePositiveInt(
-  process.env.OMNIROUTE_CHAT_HEAVY_ESTIMATED_TOKENS,
-  32_000
-);
+/**
+ * `CHAT_HEAVY_MESSAGE_COUNT` / `CHAT_HEAVY_TOOL_COUNT` /
+ * `CHAT_HEAVY_ESTIMATED_TOKENS` moved to `chatPressureWeight.ts` (imported and
+ * re-exported above) so the same thresholds decide both this structural gate
+ * and the provider-work pressure guards.
+ */
 
 /**
  * Heap-pressure shed ratio for the structural admission gate (#10183, #10268).
@@ -227,6 +243,57 @@ export function defaultPressureSeverity(): PressureSeverity {
 }
 
 /**
+ * Why a `resource_pressure` shed happened, in the same log line as the shed
+ * itself. Before this existed an operator saw only `reason:"resource_pressure"`
+ * with `activeHeavy:0 waiting:0 queuedBytes:0` — the shed fires BEFORE any body
+ * read / lease / queue accounting, so every counter is legitimately zero and the
+ * line explained nothing. Reconstructing the actual cause needed a second log
+ * line (`[resourcePressure] critical pressure guard tripped ...`) correlated by
+ * timestamp; when that line had already rotated out of the retained window the
+ * incident looked like a phantom.
+ *
+ * `reason` is the tracker's own classification (`v8_heap_ratio`,
+ * `v8_heap_absolute`, …), so the numbers here explain the values that tripped
+ * it. Heap figures are internal telemetry only — never placed in a
+ * client-facing response (Hard Rule #12).
+ */
+export interface ChatAdmissionPressureDetail {
+  severity: PressureSeverity;
+  reason: PressureReason;
+  heapUsedMb: number | null;
+  heapLimitMb: number | null;
+  heapRatio: number | null;
+  /** ms since the state entered its current severity (null when never observed). */
+  elevatedForMs: number | null;
+  retryAfterSeconds: number;
+}
+
+/**
+ * Default pressure detail: reads the SAME process-wide observation the default
+ * severity probe reads, so the recorded detail always explains the severity that
+ * caused the shed. Both reads are cached observations — never a live sample — so
+ * a shed can never block on I/O.
+ */
+export function defaultPressureDetail(now = Date.now()): ChatAdmissionPressureDetail {
+  const { signals, state } = getResourcePressureObservation();
+  const heapUsedMb = signals ? Math.round(signals.v8.heapUsedBytes / MB) : null;
+  const heapLimitMb = signals ? Math.round(signals.v8.heapLimitBytes / MB) : null;
+  const onsetMs = state.lastTransitionAtMs > 0 ? state.lastTransitionAtMs : state.observedAtMs;
+  return {
+    severity: state.severity,
+    reason: state.reason,
+    heapUsedMb,
+    heapLimitMb,
+    heapRatio:
+      heapUsedMb != null && heapLimitMb != null && heapLimitMb > 0
+        ? Math.round((heapUsedMb / heapLimitMb) * 1000) / 1000
+        : null,
+    elevatedForMs: onsetMs > 0 ? Math.max(0, now - onsetMs) : null,
+    retryAfterSeconds: resourcePressureRetryAfterSeconds(state, now),
+  };
+}
+
+/**
  * One structural-shed observation, emitted to the shed sink at warn level.
  * `lane` is the opaque fairness key — the HMAC fingerprint produced by
  * `resolveSessionId` (or "anonymous"/"default"), never a raw credential.
@@ -237,6 +304,11 @@ export interface ChatAdmissionShedEvent {
   waiting: number;
   queuedBytes: number;
   lane: string;
+  /**
+   * Present iff `reason === "resource_pressure"`: the pressure state and heap
+   * numbers behind the decision, so the warn line is self-describing.
+   */
+  pressure?: ChatAdmissionPressureDetail;
 }
 
 export type ChatAdmissionShedSink = (event: ChatAdmissionShedEvent) => void;
@@ -394,7 +466,11 @@ export class ChatAdmissionController {
    * exercise the same single path. `lane` is the opaque fairness key (HMAC
    * fingerprint), never a raw credential.
    */
-  recordShed(reason: ChatAdmissionShedReason, lane = "default"): void {
+  recordShed(
+    reason: ChatAdmissionShedReason,
+    lane = "default",
+    pressure?: ChatAdmissionPressureDetail
+  ): void {
     this.#shedTotal += 1;
     this.#shedsByReason.set(reason, (this.#shedsByReason.get(reason) ?? 0) + 1);
     this.#onShed({
@@ -403,6 +479,7 @@ export class ChatAdmissionController {
       waiting: this.waitingCount,
       queuedBytes: this.#queuedBytes,
       lane,
+      ...(pressure ? { pressure } : {}),
     });
   }
 
@@ -955,6 +1032,12 @@ export async function admitChatRequest(
     hardMaxBytes?: number;
     queueMs?: number;
     heapPressureCheck?: () => boolean;
+    /**
+     * Pressure detail recorded on a `resource_pressure` shed (and used to derive
+     * the `Retry-After`). Defaults to the process-wide observation; tests inject
+     * a deterministic snapshot.
+     */
+    pressureDetail?: () => ChatAdmissionPressureDetail;
   } = {}
 ): Promise<ChatRequestAdmission> {
   const sessionId = options.sessionId ?? resolveSessionId(request);
@@ -1005,9 +1088,30 @@ export async function admitChatRequest(
   // #503-fanout: shed before spending any bytes on ingestion when the process
   // is under genuine critical resource pressure. No-op for every controller a
   // test constructs directly (default severity is always "normal").
+  //
+  // Critical pressure sheds HEAVY requests only. Refusing *every* request —
+  // including a 5-token health ping — burned agent workers' retry budgets while
+  // the cgroup ceiling still had headroom above the V8 line that tripped the
+  // guard; a request that cannot measurably grow the heap is admitted and
+  // continues down the normal byte/structure path. Weight is judged from the
+  // declared Content-Length here (the body has not been read yet); an undeclared
+  // chunked body classifies heavy because it cannot be proven small.
   if (controller.pressureSeverity() === "critical") {
-    controller.recordShed("resource_pressure", sessionId);
-    return { admit: false, response: resourcePressureRejectionResponse() };
+    // The gate's own `largeBodyBytes` IS the "big body" line for this call, so the
+    // classifier is bounded by it rather than by the module default — otherwise a
+    // deployment that lowers the threshold would still admit what it calls heavy.
+    const weight = classifyChatPressureWeight(
+      { bodyBytes: contentLength },
+      { ...DEFAULT_CHAT_PRESSURE_BOUNDS, largeBodyBytes }
+    );
+    if (weight === "heavy") {
+      const pressure = (options.pressureDetail ?? defaultPressureDetail)();
+      controller.recordShed("resource_pressure", sessionId, pressure);
+      return {
+        admit: false,
+        response: resourcePressureRejectionResponse(pressure.retryAfterSeconds),
+      };
+    }
   }
 
   if (contentLength !== null && contentLength > hardMaxBytes) {

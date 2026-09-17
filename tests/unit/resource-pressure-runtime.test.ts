@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  checkResourcePressureGuard,
   createResourcePressureRuntime,
+  getResourcePressureObservation,
+  getResourcePressureRetryAfterSeconds,
+  reloadResourcePressureRuntime,
+  RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS,
   type ResourcePressureRuntime,
 } from "../../open-sse/utils/resourcePressure.ts";
 import type { ResourceSignals } from "../../open-sse/utils/resourcePressurePolicy.ts";
@@ -326,5 +331,98 @@ describe("ResourcePressureRuntime stale-while-revalidate cache", () => {
     await settleRefresh(second);
     assert.equal(second.getObservation().signals?.observedAtMs, 2);
     second.dispose();
+  });
+});
+
+describe("resource-pressure facade: weight-aware shedding and Retry-After", () => {
+  // Trips the process singleton with a clock we control; returns the restore fn.
+  function trip(nowMs: () => number, heapUsedMb = 500) {
+    reloadResourcePressureRuntime({
+      nowMs,
+      heapThresholdMb: 100,
+      immediateHeapUsedMb: () => heapUsedMb,
+      sample: async () => signals(nowMs(), 100),
+    });
+    return () => {
+      reloadResourcePressureRuntime({
+        immediateHeapUsedMb: () => 0,
+        sample: async () => signals(nowMs(), 1),
+      });
+    };
+  }
+
+  it("fails open for a declared LIGHT request while still shedding a heavy one", () => {
+    const restore = trip(() => 0);
+    try {
+      assert.equal(
+        checkResourcePressureGuard({ requestWeight: "light" }),
+        null,
+        "a request that cannot grow the heap must not consume a 503"
+      );
+
+      const heavy = checkResourcePressureGuard({ requestWeight: "heavy" });
+      assert.ok(heavy, "the fuse still fires for a request that could grow the heap");
+      assert.equal(heavy!.status, 503);
+
+      // The bypass is stateless: it neither sheds nor advances the tracker.
+      assert.equal(checkResourcePressureGuard({ requestWeight: "light" }), null);
+      assert.equal(checkResourcePressureGuard().status, 503, "the unclassified default still sheds");
+    } finally {
+      restore();
+    }
+  });
+
+  it("derives Retry-After from how long the episode has lasted", async () => {
+    let now = 1_000_000;
+    const restore = trip(() => now);
+    try {
+      const header = (check: { response: Response } | null) =>
+        check === null ? null : Number(check.response.headers.get("Retry-After"));
+
+      assert.equal(header(checkResourcePressureGuard()), 5, "a fresh trip keeps the historical floor");
+
+      now += 30_000;
+      assert.equal(
+        header(checkResourcePressureGuard()),
+        30,
+        "a 30s-old episode must not tell the client to retry in 5s"
+      );
+
+      now += 300_000;
+      const later = checkResourcePressureGuard();
+      assert.equal(
+        header(later),
+        RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS,
+        "the hint is capped so no client is wedged for hours"
+      );
+      assert.equal(
+        getResourcePressureRetryAfterSeconds(now),
+        RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS,
+        "the facade exposes the same hint to callers that build their own response"
+      );
+
+      // The client-facing body stays clean of internals whatever the hint is.
+      const payload = await later!.response.json();
+      assert.deepEqual(Object.keys(payload.error).sort(), ["code", "message", "type"]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not reset the episode clock on every trip", () => {
+    let now = 5_000;
+    const restore = trip(() => now);
+    try {
+      checkResourcePressureGuard();
+      now += 10_000;
+      checkResourcePressureGuard();
+      assert.equal(
+        getResourcePressureObservation().state.lastTransitionAtMs,
+        5_000,
+        "the onset must survive repeated trips, or the hint can never grow"
+      );
+    } finally {
+      restore();
+    }
   });
 });

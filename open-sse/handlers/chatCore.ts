@@ -129,6 +129,7 @@ export {
 import { resolveMemoryOwnerId, runMemoryExtractionGate } from "./chatCore/memoryExtraction.ts";
 import { CORS_HEADERS } from "../utils/cors.ts";
 import { checkResourcePressureGuard } from "../utils/resourcePressure.ts";
+import { classifyParsedRequestBodyWeight } from "../../src/shared/middleware/chatPressureWeight.ts";
 import { normalizeHeaders } from "../utils/headers.ts";
 import { resolveChatCoreRequestFormat } from "./chatCore/requestFormat.ts";
 import { resolveChatCoreTargetFormat } from "./chatCore/targetFormat.ts";
@@ -572,7 +573,9 @@ export async function handleChatCore({
   const resilienceSettings = resolveResilienceSettings(cachedSettings);
   if (!skipResourcePressureGuard) {
     try {
-      const pressureGuard = checkResourcePressureGuard();
+      const pressureGuard = checkResourcePressureGuard({
+        requestWeight: classifyParsedRequestBodyWeight(body),
+      });
       if (pressureGuard) return pressureGuard;
     } catch {
       /* fail open */

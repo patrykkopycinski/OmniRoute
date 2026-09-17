@@ -101,6 +101,52 @@ export const DEFAULT_RESOURCE_PRESSURE_THRESHOLDS: ResourcePressureThresholds = 
   heapAbsoluteThresholdMb: null,
 };
 
+/**
+ * `Retry-After` bounds for a resource-pressure 503.
+ *
+ * MIN matches the historical fixed hint (`RETRY_AFTER_SECONDS = "5"` in both
+ * `heapPressure.ts` and `resourcePressure.ts`), so a guard that trips on a fresh
+ * observation answers exactly as it always did.
+ *
+ * MAX keeps one episode from telling a client to sleep through a whole recovery
+ * window: the tracker clears at `recoveryRatio` (0.75 of the ceiling), which is
+ * a real, frequently-crossed bar — advertising the full elapsed episode would
+ * over-sleep clients past the point where the gateway was already serving again.
+ */
+export const RESOURCE_PRESSURE_RETRY_AFTER_MIN_SECONDS = 5;
+export const RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS = 120;
+
+/**
+ * How much heap a chat request may plausibly add, as judged by
+ * `chatPressureWeight.ts` (which owns the thresholds and the classifier).
+ * Declared here because both layers exchange it: `open-sse`'s pressure guards
+ * consult it and `src/shared/middleware`’s admission gate produces it.
+ *
+ * `"light"` requests stay admitted under critical pressure; `"heavy"` ones are
+ * shed/queued as before.
+ */
+export type ChatPressureWeight = "light" | "heavy";
+
+/**
+ * Honest `Retry-After` for a pressure 503: how long this state has ALREADY
+ * lasted, floored at MIN and capped at MAX. The elapsed-since-onset figure is
+ * the only evidence available without a crystal ball, and it is strictly more
+ * honest than the fixed 2–5 s hints it replaces — the heap is ~95% live data and
+ * recovery is load-driven, so an episode that has already run for minutes will
+ * not clear in the second a fixed hint invites the client to retry in.
+ */
+export function resourcePressureRetryAfterSeconds(
+  state: ResourcePressureState,
+  nowMs: number
+): number {
+  const onsetMs = state.lastTransitionAtMs > 0 ? state.lastTransitionAtMs : state.observedAtMs;
+  const elapsedSeconds = onsetMs > 0 ? Math.ceil(Math.max(0, nowMs - onsetMs) / 1000) : 0;
+  return Math.min(
+    RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS,
+    Math.max(RESOURCE_PRESSURE_RETRY_AFTER_MIN_SECONDS, elapsedSeconds)
+  );
+}
+
 type RawLevel = { severity: PressureSeverity; reason: PressureReason };
 type OomCounters = { oom: number | null; oomKill: number | null };
 

@@ -13,6 +13,9 @@ const JSON_HEADERS = { ...CORS_HEADERS, "Content-Type": "application/json" };
  */
 const BYTE_STAGE_RETRY_AFTER_FLOOR_SECONDS = 2;
 const STRUCTURAL_RETRY_AFTER_FLOOR_SECONDS = 1;
+/** Pre-derived-hint value for a `resource_pressure` 503 — kept as the floor so a
+ * gate that trips on a brand-new observation answers exactly as it always did. */
+const RESOURCE_PRESSURE_RETRY_AFTER_FLOOR_SECONDS = 2;
 
 function retryAfterHeader(floorSeconds: number, hintSeconds: number | undefined): string {
   const hint = Number.isFinite(hintSeconds) ? Math.ceil(hintSeconds as number) : 0;
@@ -63,7 +66,19 @@ export function bodyExceedsBudgetResponse(maxInflightBytes: number): Response {
   );
 }
 
-export function resourcePressureRejectionResponse(): Response {
+/**
+ * Pressure rejection for an admitted-nowhere request. `retryAfterSeconds` is the
+ * caller's derived hint (`ChatAdmissionPressureDetail#retryAfterSeconds`, which
+ * scales with how long the pressure has already lasted); the header carries the
+ * larger of it and the historical 2 s floor, so a freshly-tripped gate still
+ * answers exactly as before.
+ */
+export function resourcePressureRejectionResponse(retryAfterSeconds?: number): Response {
+  const headers = { ...JSON_HEADERS };
+  headers["Retry-After"] = retryAfterHeader(
+    RESOURCE_PRESSURE_RETRY_AFTER_FLOOR_SECONDS,
+    retryAfterSeconds
+  );
   return new Response(
     JSON.stringify(
       buildErrorBody(
@@ -73,7 +88,7 @@ export function resourcePressureRejectionResponse(): Response {
         { type: "server_error", code: "resource_pressure" }
       )
     ),
-    { status: 503, headers: { ...JSON_HEADERS, "Retry-After": "2" } }
+    { status: 503, headers }
   );
 }
 

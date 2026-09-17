@@ -40,6 +40,21 @@ complementary; operators should know which one they are looking at.
   the bounded wait under `high` pressure and sheds immediately with
   `503 resource_pressure` under `critical` pressure, before any bytes are even
   ingested.
+- **Under `critical` pressure only HEAVY requests are shed.** The gate used to
+  refuse every chat request, including a health ping, which burned agent
+  workers' retry budgets on 5xx while the cgroup ceiling still had headroom
+  above the V8 line that tripped the guard. "Heavy" is now one shared
+  definition (`src/shared/middleware/chatPressureWeight.ts`): a request whose
+  declared/serialized size, message count, tool count, or conservative
+  structure-token estimate reaches its bound. A request with no established
+  weight — notably an undeclared/chunked body — counts as heavy, because it
+  cannot be proven small. The same classifier bounds the post-parse
+  provider-work guards (`chatCore`, `executeChatWithBreaker`), so a light
+  request admitted at the gate is not 503'd one layer up.
+- **`Retry-After` is derived, not constant.** A pressure 503 reports how long
+  the episode has actually lasted since the state transition
+  (`resourcePressureRetryAfterSeconds`, floored at 5s and capped at 120s), so a
+  client that honours it does not hot-loop against a multi-minute episode.
 - **Tuning:**
   - `OMNIROUTE_CHAT_MAX_INFLIGHT_BYTES` — override for the auto-derived byte budget
   - `OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT` — legacy request-count cap, opt-in only

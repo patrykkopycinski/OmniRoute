@@ -22,6 +22,36 @@ const { handleChatCore } = await import("../../open-sse/handlers/chatCore.ts");
 
 const MiB = 1024 ** 2;
 
+/**
+ * A body the pressure classifier must call HEAVY: 200 messages ≈ 400k chars
+ * (≈100k estimated tokens), past every default bound, so this suite cannot
+ * silently start exercising the LIGHT path if an env override moves a default.
+ */
+const HEAVY_BODY = {
+  model: "openai/gpt-4o-mini",
+  messages: Array.from({ length: 200 }, (_, index) => ({
+    role: "user",
+    content: `msg-${index} ${"x".repeat(2000)}`,
+  })),
+};
+
+/** A health-ping-shaped body: the request class the pressure fuse must not kill. */
+const LIGHT_BODY = {
+  model: "openai/gpt-4o-mini",
+  messages: [{ role: "user", content: "hi" }],
+};
+
+/** Trips the process singleton so the pressure fuse is live for every call site. */
+function tripPressure() {
+  reloadResourcePressureRuntime({
+    heapThresholdMb: 100,
+    immediateHeapUsedMb: () => 999,
+    sample: async () => {
+      throw new Error("sampler must not run on request path");
+    },
+  });
+}
+
 async function resetStorage() {
   resetAllCircuitBreakers();
   core.resetDbInstance();
@@ -57,13 +87,7 @@ test.after(async () => {
 });
 
 test("executeChatWithBreaker returns typed pressure 503 before normal, bypass, and shadow breaker paths", async () => {
-  reloadResourcePressureRuntime({
-    heapThresholdMb: 100,
-    immediateHeapUsedMb: () => 999,
-    sample: async () => {
-      throw new Error("sampler must not run on request path");
-    },
-  });
+  tripPressure();
 
   // Sanity: process singleton sheds.
   const direct = checkResourcePressureGuard();
@@ -94,7 +118,7 @@ test("executeChatWithBreaker returns typed pressure 503 before normal, bypass, a
   const baseExecution = {
     bypassCircuitBreaker: false,
     breaker,
-    body: { model: "openai/gpt-4o-mini", messages: [{ role: "user", content: "x" }] },
+    body: HEAVY_BODY,
     provider: "openai",
     model: "gpt-4o-mini",
     refreshedCredentials: credentials,
@@ -170,7 +194,7 @@ test("direct handleChatCore default still applies resource pressure guard", asyn
       response?: Response;
     }>
   )({
-    body: { model: "openai/gpt-4o-mini", messages: [{ role: "user", content: "hi" }] },
+    body: HEAVY_BODY,
     modelInfo: { provider: "openai", model: "gpt-4o-mini" },
     credentials: { connectionId: "c1", apiKey: "sk-x", providerSpecificData: {} },
     log: console,
@@ -220,7 +244,7 @@ test("handleChatCore skipResourcePressureGuard bypasses the inside-core fuse", a
         response?: Response;
       }>
     )({
-      body: { model: "openai/gpt-4o-mini", messages: [{ role: "user", content: "hi" }] },
+      body: HEAVY_BODY,
       modelInfo: { provider: "openai", model: "gpt-4o-mini" },
       credentials: { connectionId: "c1", apiKey: "sk-x", providerSpecificData: {} },
       log: console,
@@ -240,6 +264,62 @@ test("handleChatCore skipResourcePressureGuard bypasses the inside-core fuse", a
     } else if (result?.status === 503) {
       assert.notEqual(result?.error, "resource_pressure");
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("executeChatWithBreaker lets a LIGHT body through the tripped pressure fuse", async () => {
+  tripPressure();
+  assert.ok(checkResourcePressureGuard(), "precondition: the fuse is live for a heavy request");
+  assert.equal(
+    checkResourcePressureGuard({ requestWeight: "light" }),
+    null,
+    "precondition: the same fuse is transparent to a light request"
+  );
+
+  const breaker = getCircuitBreaker("openai-pressure-light");
+  const credentials = {
+    connectionId: "conn_pressure_light",
+    apiKey: "sk-light",
+    providerSpecificData: {},
+  };
+
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response(JSON.stringify({ error: { message: "upstream" } }), { status: 502 });
+  };
+
+  try {
+    const execution = await executeChatWithBreaker({
+      bypassCircuitBreaker: false,
+      breaker,
+      body: LIGHT_BODY,
+      provider: "openai",
+      model: "gpt-4o-mini",
+      refreshedCredentials: credentials,
+      proxyInfo: null,
+      log: console,
+      clientRawRequest: { endpoint: "/v1/chat/completions", headers: new Map() },
+      credentials,
+      apiKeyInfo: null,
+      userAgent: "",
+      comboName: null,
+      comboStrategy: null,
+      isCombo: false,
+      extendedContext: false,
+      comboStepId: null,
+      comboExecutionKey: null,
+    });
+
+    assert.equal(
+      "localResourcePressureResult" in execution,
+      false,
+      "a health-ping-shaped body must not be shed while the gateway nurses its own heap"
+    );
+    assert.ok(fetchCalls > 0, "the light request must reach provider work");
   } finally {
     globalThis.fetch = originalFetch;
   }
