@@ -48,9 +48,21 @@ complementary; operators should know which one they are looking at.
   declared/serialized size, message count, tool count, or conservative
   structure-token estimate reaches its bound. A request with no established
   weight — notably an undeclared/chunked body — counts as heavy, because it
-  cannot be proven small. The same classifier bounds the post-parse
-  provider-work guards (`chatCore`, `executeChatWithBreaker`), so a light
-  request admitted at the gate is not 503'd one layer up.
+  cannot be proven small. The same classifier bounds **every** pressure gate on
+  the chat path, so a light request admitted at one is not 503'd by the next:
+  the adaptive-admission runtime's own fuse
+  (`AdaptiveAdmissionRuntimeImpl.acquire`, which runs FIRST, before the handler
+  is even entered) and the post-parse provider-work guards (`chatCore`,
+  `executeChatWithBreaker`).
+- **A light request still runs the full pressure `check()`.** The weight is
+  passed INTO `checkResourcePressureGuard`, which drops the verdict at its
+  return sites — no gate may short-circuit before calling it. `check()` is the
+  only pump of the pressure sampler (`scheduleRefresh()` lives inside it; there
+  is no timer), so a gate that returned early for light requests would freeze
+  the observation at `critical` during light-only traffic and shed heavy
+  requests forever with no path back to `normal`. Passing the weight down also
+  keeps the `[resourcePressure] … returning 503` warn line off requests that
+  were in fact admitted.
 - **`Retry-After` is derived, not constant.** A pressure 503 reports how long
   the episode has actually lasted since the state transition
   (`resourcePressureRetryAfterSeconds`, floored at 5s and capped at 120s), so a

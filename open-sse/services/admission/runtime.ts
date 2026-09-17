@@ -26,7 +26,12 @@ import {
   type ResourcePressureGuardResult,
   type ResourcePressureObservation,
 } from "../../utils/resourcePressure.ts";
-import type { PressureReason, PressureSeverity } from "../../utils/resourcePressurePolicy.ts";
+import type {
+  ChatPressureWeight,
+  PressureReason,
+  PressureSeverity,
+} from "../../utils/resourcePressurePolicy.ts";
+import { classifyParsedRequestBodyWeight } from "../../../src/shared/middleware/chatPressureWeight.ts";
 
 export { extractAdmissionCostFeatures } from "./requestFeatures.ts";
 
@@ -170,7 +175,9 @@ export type AdaptiveAdmissionRuntimeOptions = {
   config?: AdaptiveAdmissionConfig;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   clock?: Partial<AdmissionClock>;
-  checkResourcePressure?: () => ResourcePressureGuardResult | null;
+  checkResourcePressure?: (options?: {
+    requestWeight?: ChatPressureWeight;
+  }) => ResourcePressureGuardResult | null;
   getResourcePressureObservation?: () => ResourcePressureObservation;
   /** Test seam: observe pressure values fed into the controller after dedupe. */
   onPressureObserved?: (pressure: AdmissionPressure) => void;
@@ -323,7 +330,9 @@ function classifyHttpOutcome(status: number, signal?: AbortSignal): AdmissionRel
 
 class AdaptiveAdmissionRuntimeImpl implements AdaptiveAdmissionRuntime {
   private readonly controller: AdaptiveAdmissionController;
-  private readonly checkResourcePressure: () => ResourcePressureGuardResult | null;
+  private readonly checkResourcePressure: (options?: {
+    requestWeight?: ChatPressureWeight;
+  }) => ResourcePressureGuardResult | null;
   private readonly getResourcePressureObservation: () => ResourcePressureObservation;
   private readonly onPressureObserved?: (pressure: AdmissionPressure) => void;
   private readonly nowMs: () => number;
@@ -352,9 +361,18 @@ class AdaptiveAdmissionRuntimeImpl implements AdaptiveAdmissionRuntime {
 
     // Independent safety fuse first — never acquire provider work on critical guard.
     // Still feed pressure observations so the controller learns from critical samples.
+    //
+    // Weight-aware (see src/shared/middleware/chatPressureWeight.ts): this gate
+    // runs BEFORE chatCore's and chatHelpers' pressure guards, so a light
+    // request admitted there would still be refused here. The guard itself
+    // always pumps the sampler and only discards the verdict for light
+    // requests, so routing light traffic through it cannot freeze the pressure
+    // state. A body whose weight cannot be established classifies heavy.
     let guard: ResourcePressureGuardResult | null = null;
     try {
-      guard = this.checkResourcePressure();
+      guard = this.checkResourcePressure({
+        requestWeight: classifyParsedRequestBodyWeight(input.body),
+      });
     } catch {
       // Fail open on sampling/check failures.
     }
