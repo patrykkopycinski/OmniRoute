@@ -166,3 +166,109 @@ retryable `503` so #7849 does not return.
 To **multiply heaps**, run N independent `DATA_DIR`s (#11024). Never
 `replicas > 1` on one SQLite file (#10350). This section is not a reopen of
 the DATA_DIR scale-out recipe.
+
+## 5. Working-set ceiling sizing, from heap evidence
+
+This section records the **measured** basis for the working-set knobs
+(`OMNIROUTE_CHAT_WORK_AMPLIFICATION`, `OMNIROUTE_CHAT_MAX_WORK_BYTES`) and for
+`--max-old-space-size`, and the two ceiling semantics that must not be confused
+with each other (the in-app heap gate of section 1 vs. the m1max watchdog's
+RSS rung).
+
+### 5.1 What actually binds — measured 2026-09-17, rev `f69ca7819`
+
+Measurement window: 48 samples @30 s on the serving gateway (`omniroute`,
+image `omniroute:stream-readiness-cause-f69ca7819`, `--memory 14g`,
+`--max-old-space-size=8192` ⇒ `heap_size_limit` 8,384 MB), read through the
+app's own state route (no inspector, no forced GC, no restart of our own).
+
+- **The byte path is not the binding limit at live load.** Over 26 h of real
+  traffic (15,238 calls) max concurrency was **27**, max concurrent
+  `tokens_in >= 100k` requests **13**, and peak concurrent prompt text
+  **7.0 MB**. At the measured **5.20–5.25x wire** amplification
+  (`npm run bench:heap-body`: entry clone 1.05x + token-estimate stringify
+  1.00x + per-target attempt bodies 3.12x), peak in-flight work is
+  ~**37 MB** — under 1% of the 7,126 MB heap gate. A work-bytes gate cannot
+  bind there; it stays a *concurrency safety net* only.
+- **RSS must never size a per-request ceiling.** `RSS - heapUsed` is a fixed
+  **3.5–3.6 GB** on this host (mean 3,570 MB, range 598 MB at boot to
+  4,001 MB), because of a single ~2.6–3.1 GB fully-dirty anonymous mapping
+  (V8 pointer-cage address class) plus glibc arenas — present while the heap is
+  nearly idle. Any "RSS / concurrent requests" figure (e.g. 5.5 GB / 27 ≈
+  204 MB per request) is measuring that constant, not request cost.
+- **What binds is a load-independent, time-proportional accumulation.**
+  Measured rate once warm: **+572 MB over 444 s = 77 MB/min** of true
+  `heapUsed` (RSS +65 MB/min) at 37–73 calls/min with only 0–5 MB in flight;
+  **~2.0–3.1 MB retained per call**. The same gateway's canary, under sustained
+  synthetic load with identical 1.45 MB bodies, retains ~0.03 MB/call. A forced
+  GC on the live heap reclaimed 6.5% (91–95% live), so this is retention, not
+  lazy collection.
+- **The effective ceiling today is the watchdog, not the app's shed trip.**
+  `heapPressure.ts` trips at `SHED_RATIO 0.85 x heap_size_limit` = **7,126 MB**,
+  but `~/bin/omniroute-watchdog.sh` restarts the container when
+  `VmRSS - 3000 >= 6800 MB` for 120 s, which on this host is
+  **heapUsed ≈ 6.25 GB**. Observed: at `heapUsed` 6,490 MB / RSS 10,029 MB
+  (`VmRSS-3000 = 7,029`) the watchdog restarted the gateway — while
+  **`shed_total = 0`, `pressure_guard_rejects = 0`, `severity = normal` in all
+  48 samples**. Max observed heap was **91.1% of the shed trip**: the app's own
+  shed path is unreachable at the current thresholds, and the ~900 MB between
+  the two limits is dead headroom.
+
+**Chosen values** (recorded here; applied to the recreate spec, inert until the
+work-budget code is in the image):
+
+| knob | value | basis |
+| --- | --- | --- |
+| `OMNIROUTE_CHAT_WORK_AMPLIFICATION` | `5.25` | measured upper bound, `bench:heap-body` |
+| `OMNIROUTE_CHAT_MAX_WORK_BYTES` | `536870912` (512 MiB) | ≥10x the measured live peak (5.25 x 7.0 MB ≈ 37 MB) so it never sheds real traffic; caps catastrophe at 512 MiB / (5.25 x 1.45 MB) ≈ 67 concurrent full-size bodies = 2.5x the observed max concurrency (27) |
+| `--max-old-space-size` (recommendation) | `6144` | yields `heap_size_limit` ≈ 6,336 MB ⇒ in-app trip **5,386 MB**, ~840 MB below the watchdog's ~6.25 GB rung, so the app degrades with a retryable 503 *before* the watchdog kills it |
+
+The last row is a **capacity decision for the operator, not applied by this
+change**: `NODE_OPTIONS` only takes effect at container create, and lowering the
+heap limit trades shed-frequency for restart-frequency. Raising the watchdog's
+`HEAP_RESTART_MB` instead has the same effect without touching the app.
+
+**Growth curve by band** (deliverable shape; band = `activeHeavy` at sample
+time, `calls/min` from the app's own 30 s call window):
+
+- `c0` (idle): negative (~-650 MB/min in the 2 idle intervals) — the heap does
+  release when nothing is running.
+- `c1–c2` (≤2 large in flight): **+105 MB/min** at 37 calls/min.
+- `c3+` (3 large in flight): **+266 to +896 MB/min** at 74 calls/min.
+- Cold boot: 479 MB @22 s → 962 MB @189 s; RSS reaches its ~4.4–4.7 GB plateau
+  only after ~4 min (the cage mapping is populated lazily), so **boot-ramp
+  samples must be excluded** from any rate fit.
+
+**Confound, stated explicitly:** on this gateway call rate and concurrency
+co-vary (the load is agent traffic, which arrives in bursts), so the c-band
+spread above is **call-rate, not concurrency**. The defensible summary is:
+heap grows **+40–80 MB/min** at 20–75 calls/min once warm, i.e. **~2–3 MB per
+call, independent of how many are concurrent**.
+
+### 5.2 Do not census the serving process (`queryObjects` kills it)
+
+Two independent reproductions on 2026-09-17 show that a `Runtime.queryObjects`
+census with property reads **terminates the gateway**:
+
+- `09:02:05.788Z` on the serving container (exit code 7, no OOM, no watchdog
+  involvement) and `09:59:06Z` on an idle canary (same exit code) — identical
+  stack:
+
+```
+TypeError: Value of "this" must be of type ReadableStreamBYOBReader
+    at get closed (node:internal/webstreams/readablestream:1126:28)
+    at shallow (<anonymous>:23:68)
+    at Array.<anonymous> (<anonymous>:44:15)
+    at Object.all (/app/.build/next/server/chunks/src_0_qfvn_._.js:1:3554)
+  code: 'ERR_INVALID_THIS'
+```
+
+`<anonymous>` frames are the injected aggregator; line 23 col 68 is its
+`o[ks[i]]` property read, and the app's stream-close path is what it trips.
+**Rule:** attribution work against the live process must use only
+V8-internal instruments (`HeapProfiler.startSampling`,
+`getHeapSpaceStatistics`, `process.memoryUsage`) — never an object census, and
+never a forced GC on a container serving traffic. That is also why the
+shed-time snapshot rig (`omniheap-capture.sh`) is left **unloaded**: a
+stop-the-world snapshot on this process is the same hazard class, and the
+in-app shed trip it was supposed to observe is unreachable anyway (5.1).
