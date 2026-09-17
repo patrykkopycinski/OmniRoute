@@ -253,6 +253,32 @@ function oversizedBody(prefix: string) {
   };
 }
 
+/**
+ * A body the pressure classifier must call HEAVY while staying under the
+ * default big-body byte line (~256 KB), so it exercises the post-parse
+ * structure verdict rather than the pre-read declared-size one: 220 messages
+ * beyond the message-count bound AND well past the token bound.
+ */
+function heavyBody(prefix: string) {
+  return {
+    model: "openai/gpt-4o-mini",
+    stream: false,
+    messages: Array.from({ length: 220 }, (_, i) => ({
+      role: "user",
+      content: `${prefix}-${i}-${"x".repeat(1000)}`,
+    })),
+  };
+}
+
+/** A health-ping-shaped body: what the pressure fuse must NOT refuse. */
+function lightBody(prefix: string) {
+  return {
+    model: "openai/gpt-4o-mini",
+    stream: false,
+    messages: [{ role: "user", content: `${prefix} ping` }],
+  };
+}
+
 test("enforce oversized/queue rejection returns standardized 503 before provider fetch", async () => {
   await seedConnection("openai", { apiKey: "sk-openai-enforce-reject" });
   reloadEnforceOversized();
@@ -357,10 +383,7 @@ test(
 
     const response = await handleChat(
       buildRequest({
-        body: {
-          model: "openai/gpt-4o-mini",
-          messages: [{ role: "user", content: "shed locally" }],
-        },
+        body: heavyBody("shed locally"),
       })
     );
 
@@ -400,10 +423,7 @@ test("resource pressure takes precedence over an open provider breaker", async (
 
   const response = await handleChat(
     buildRequest({
-      body: {
-        model: "openai/gpt-4o-mini",
-        messages: [{ role: "user", content: "pressure before breaker" }],
-      },
+      body: heavyBody("pressure before breaker"),
     })
   );
   assert.equal(response.status, 503);
@@ -440,4 +460,33 @@ test("local admission rejection does not mutate a supplied provider breaker", as
   assert.equal(after.state, STATE.CLOSED);
   assert.equal(after.failureCount, before.failureCount);
   assert.equal(breaker.successCount, beforeSuccessCount);
+});
+
+test("a LIGHT body survives critical resource pressure at the route level", async () => {
+  // The regression this pins: the pressure fuse refused EVERY chat request —
+  // including a health ping — so agent workers burned their retry budget on 5xx
+  // while the gateway still had headroom. A request that cannot grow the heap
+  // must reach the provider.
+  await seedConnection("openai", { apiKey: "sk-openai-pressure-light" });
+
+  reloadCriticalResourcePressure();
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return new Response(
+      JSON.stringify({
+        id: "chatcmpl-light",
+        object: "chat.completion",
+        choices: [
+          { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  };
+
+  const response = await handleChat(buildRequest({ body: lightBody("light under pressure") }));
+
+  assert.equal(response.status, 200, "a light request must not be refused under pressure");
+  assert.equal(fetchCalls, 1, "it must reach the provider");
 });

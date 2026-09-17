@@ -2,7 +2,10 @@ import { checkHeapPressureGuard, HEAP_PRESSURE_THRESHOLD_MB } from "./heapPressu
 import { buildErrorBody } from "./error.ts";
 import {
   createResourcePressureTracker,
+  resourcePressureRetryAfterSeconds,
   resolveResourcePressureThresholds,
+  RESOURCE_PRESSURE_RETRY_AFTER_MIN_SECONDS,
+  type ChatPressureWeight,
   type PressureReason,
   type ResourcePressureState,
   type ResourcePressureThresholds,
@@ -14,7 +17,6 @@ import {
 } from "./resourcePressureSampler.ts";
 
 const MB = 1024 * 1024;
-const RETRY_AFTER_SECONDS = "5";
 const PRESSURE_MESSAGE = "Service temporarily unavailable due to resource pressure. Retry shortly.";
 
 export type ResourcePressureGuardResult = {
@@ -103,7 +105,8 @@ function describeCachedPressure(params: {
 
 function buildCriticalGuard(
   reason: PressureReason,
-  detail: Record<string, number | string | null | undefined> = {}
+  detail: Record<string, number | string | null | undefined> = {},
+  retryAfterSeconds: number = RESOURCE_PRESSURE_RETRY_AFTER_MIN_SECONDS
 ): ResourcePressureGuardResult {
   const detailText = formatPressureDetail(detail);
   console.warn(
@@ -122,23 +125,31 @@ function buildCriticalGuard(
       ),
       {
         status: 503,
-        headers: { "Content-Type": "application/json", "Retry-After": RETRY_AFTER_SECONDS },
+        headers: {
+          "Content-Type": "application/json",
+          // Derived from how long the pressure state has already lasted — a fixed
+          // hint made clients re-send into an episode that runs for minutes.
+          "Retry-After": String(retryAfterSeconds),
+        },
       }
     ),
   };
 }
 
+/**
+ * Live heap trip check. Returns the numbers behind the trip (never a ready
+ * response) — the caller builds the single 503, so one trip produces exactly one
+ * `[resourcePressure]` warn line carrying the detail AND the derived
+ * `Retry-After`. `checkHeapPressureGuard`'s own 503 body is still built here only
+ * because it owns the historical `[chatCore] heap pressure guard tripped` warn.
+ */
 function immediateHeapGuard(
   heapUsedMb: number,
   thresholdMb: number | null
-): ResourcePressureGuardResult | null {
+): { heapUsedMb: number; thresholdMb: number } | null {
   if (thresholdMb == null) return null;
-  const guard = checkHeapPressureGuard(heapUsedMb, thresholdMb);
-  if (!guard) return null;
-  return buildCriticalGuard("v8_heap_absolute", {
-    heapUsedMb: Math.round(heapUsedMb),
-    thresholdMb: Math.round(thresholdMb),
-  });
+  if (!checkHeapPressureGuard(heapUsedMb, thresholdMb)) return null;
+  return { heapUsedMb, thresholdMb };
 }
 
 export function createResourcePressureRuntime(
@@ -222,15 +233,31 @@ export function createResourcePressureRuntime(
       const now = nowMs();
       if (now >= nextRefreshAtMs) scheduleRefresh();
       if (immediate) {
-        state = {
-          severity: "critical",
-          reason: "v8_heap_absolute",
-          elevatedStreak: 0,
-          recoveryStreak: 0,
-          lastTransitionAtMs: now,
-          observedAtMs: now,
-        };
-        return immediate;
+        // Keep the ONSET of the absolute spike: a fresh `lastTransitionAtMs`
+        // per check would report every trip as brand new, so the derived
+        // `Retry-After` could never convey that an episode has been running for
+        // minutes (which is exactly the case this guard fires in). Severity and
+        // reason are already what we are about to record, so only the
+        // observation stamp moves while the spike persists.
+        state =
+          state.severity === "critical" && state.reason === "v8_heap_absolute"
+            ? { ...state, observedAtMs: now }
+            : {
+                severity: "critical",
+                reason: "v8_heap_absolute",
+                elevatedStreak: 0,
+                recoveryStreak: 0,
+                lastTransitionAtMs: now,
+                observedAtMs: now,
+              };
+        return buildCriticalGuard(
+          "v8_heap_absolute",
+          {
+            heapUsedMb: Math.round(immediate.heapUsedMb),
+            thresholdMb: Math.round(immediate.thresholdMb),
+          },
+          resourcePressureRetryAfterSeconds(state, now)
+        );
       }
       const cacheAge = lastSignals ? Math.max(0, now - lastRefreshAtMs) : Number.POSITIVE_INFINITY;
       if (cacheAge > maxStaleMs || state.severity !== "critical") {
@@ -242,7 +269,8 @@ export function createResourcePressureRuntime(
           signals: lastSignals,
           recoveryStreak: state.recoveryStreak,
           cacheAgeMs: cacheAge,
-        })
+        }),
+        resourcePressureRetryAfterSeconds(state, now)
       );
     },
     getObservation: () => ({ signals: lastSignals, state }),
@@ -259,12 +287,33 @@ export function createResourcePressureRuntime(
 
 let defaultRuntime = createResourcePressureRuntime();
 
-export function checkResourcePressureGuard(): ResourcePressureGuardResult | null {
+/**
+ * Chat-pipeline pressure fuse (fail-open on any sampling error).
+ *
+ * `requestWeight` lets the caller declare a LIGHT request (see
+ * `src/shared/middleware/chatPressureWeight.ts`: a small declared body, few
+ * messages/tools, a small structure-token estimate). Light requests fail OPEN
+ * here: one that cannot measurably grow the heap must not burn an agent worker's
+ * retry budget while the gateway is merely nursing its own working set — that
+ * blanket refusal was killing workers mid-task. Heavy requests, and any request
+ * whose weight the caller did not establish, are refused exactly as before.
+ */
+export function checkResourcePressureGuard(
+  options: { requestWeight?: ChatPressureWeight } = {}
+): ResourcePressureGuardResult | null {
+  if (options.requestWeight === "light") return null;
   return defaultRuntime.check();
 }
 
 export function getResourcePressureObservation(): ResourcePressureObservation {
   return defaultRuntime.getObservation();
+}
+
+/** Honest `Retry-After` (seconds) for the CURRENT pressure state, for callers
+ * that answer a pressure rejection outside this module (the chat-admission
+ * gate). */
+export function getResourcePressureRetryAfterSeconds(nowMs = Date.now()): number {
+  return resourcePressureRetryAfterSeconds(defaultRuntime.getObservation().state, nowMs);
 }
 
 /** Replaces and disposes the process singleton when configuration is reloaded. */
@@ -277,6 +326,7 @@ export function reloadResourcePressureRuntime(
 }
 
 export type {
+  ChatPressureWeight,
   PressureReason,
   PressureSeverity,
   ResourceMetricBytes,
@@ -289,6 +339,9 @@ export {
   classifyAdaptiveResourcePressure as classifyResourcePressure,
   createResourcePressureTracker,
   resolveResourcePressureThresholds,
+  resourcePressureRetryAfterSeconds,
+  RESOURCE_PRESSURE_RETRY_AFTER_MAX_SECONDS,
+  RESOURCE_PRESSURE_RETRY_AFTER_MIN_SECONDS,
 } from "./resourcePressurePolicy.ts";
 export {
   sampleResourceSignals,

@@ -15,6 +15,7 @@ import {
   checkResourcePressureGuard,
   type ResourcePressureGuardResult,
 } from "@omniroute/open-sse/utils/resourcePressure.ts";
+import { classifyParsedRequestBodyWeight } from "../../shared/middleware/chatPressureWeight.ts";
 import {
   errorResponse,
   modelCooldownResponse,
@@ -391,9 +392,13 @@ export async function checkPipelineGates(
   return null;
 }
 
-export function checkResourcePressureBeforeProviderWork(): ResourcePressureGuardResult | null {
+export function checkResourcePressureBeforeProviderWork(
+  body?: unknown
+): ResourcePressureGuardResult | null {
   try {
-    return checkResourcePressureGuard();
+    return checkResourcePressureGuard({
+      requestWeight: classifyParsedRequestBodyWeight(body),
+    });
   } catch {
     return null;
   }
@@ -457,7 +462,9 @@ export async function executeChatWithBreaker({
   const capture = <T>(fn: () => T): T =>
     appliedProxySink ? runWithAppliedProxyCapture(appliedProxySink, fn) : fn();
 
-  const pressureGuard = checkResourcePressureBeforeProviderWork();
+  // Weight-aware: a LIGHT request (small body/structure) stays admitted even
+  // under critical pressure — see chatPressureWeight.ts.
+  const pressureGuard = checkResourcePressureBeforeProviderWork(body);
   if (pressureGuard) {
     return { localResourcePressureResult: pressureGuard, tlsFingerprintUsed: false };
   }

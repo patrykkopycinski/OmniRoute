@@ -177,34 +177,158 @@ test("high pressure: budget freed mid-wait is claimed instead of shedding", asyn
   if (result.admit) result.lease?.release();
 });
 
-test("critical pressure: the whole request is shed before ingestion, with a distinct code", async () => {
+test("critical pressure: a HEAVY request is shed before ingestion, with a distinct code", async () => {
+  const events: { reason: string; pressure?: unknown }[] = [];
   const controller = new ChatAdmissionController(
     Number.MAX_SAFE_INTEGER,
     undefined,
     0,
-    silentSink,
+    (event) => events.push(event),
     {
       maxInflightBytes: 1024 * 1024 * 1024, // budget is not the limiting factor here
       checkPressureSeverity: () => "critical",
     }
   );
 
-  const result = await admitChatRequest(requestFor(bodyOf(64)), {
+  const result = await admitChatRequest(requestFor(bodyOf(4096)), {
     controller,
     sessionId: "critical-shed",
     largeBodyBytes: 1024,
     hardMaxBytes: 10 * 1024 * 1024,
     queueMs: 5000,
+    pressureDetail: () => ({
+      severity: "critical",
+      reason: "v8_heap_absolute",
+      heapUsedMb: 7500,
+      heapLimitMb: 7900,
+      heapRatio: 0.949,
+      elevatedForMs: 240_000,
+      retryAfterSeconds: 17,
+    }),
   });
 
   assert.equal(result.admit, false);
   if (!result.admit) {
     assert.equal(result.response.status, 503);
-    assert.equal(result.response.headers.get("Retry-After"), "2");
+    // The hint is the caller's derived value, not a constant: the admitted-nowhere
+    // client must wait as long as the episode has actually lasted.
+    assert.equal(result.response.headers.get("Retry-After"), "17");
     const payload = await result.response.json();
     assert.equal(payload.error.code, "resource_pressure");
   }
   assert.deepEqual(controller.shedsByReason, { resource_pressure: 1 });
+  assert.equal(events.length, 1);
+  assert.deepEqual(
+    events[0].pressure,
+    {
+      severity: "critical",
+      reason: "v8_heap_absolute",
+      heapUsedMb: 7500,
+      heapLimitMb: 7900,
+      heapRatio: 0.949,
+      elevatedForMs: 240_000,
+      retryAfterSeconds: 17,
+    },
+    "the shed event must explain WHY, so ops can act without a repro"
+  );
+});
+
+test("critical pressure: Retry-After never goes below the historical floor", async () => {
+  const controller = new ChatAdmissionController(
+    Number.MAX_SAFE_INTEGER,
+    undefined,
+    0,
+    silentSink,
+    {
+      maxInflightBytes: 1024 * 1024 * 1024,
+      checkPressureSeverity: () => "critical",
+    }
+  );
+
+  const result = await admitChatRequest(requestFor(bodyOf(4096)), {
+    controller,
+    largeBodyBytes: 1024,
+    hardMaxBytes: 10 * 1024 * 1024,
+    queueMs: 5000,
+    pressureDetail: () => ({
+      severity: "critical",
+      reason: "v8_heap_ratio",
+      heapUsedMb: 7000,
+      heapLimitMb: 7500,
+      heapRatio: 0.933,
+      elevatedForMs: 0,
+      retryAfterSeconds: 1,
+    }),
+  });
+
+  assert.equal(result.admit, false);
+  if (!result.admit) assert.equal(result.response.headers.get("Retry-After"), "2");
+});
+
+test("critical pressure: a LIGHT request is still admitted", async () => {
+  const controller = new ChatAdmissionController(
+    Number.MAX_SAFE_INTEGER,
+    undefined,
+    0,
+    silentSink,
+    {
+      maxInflightBytes: 1024 * 1024,
+      checkPressureSeverity: () => "critical",
+    }
+  );
+
+  const result = await admitChatRequest(requestFor(bodyOf(64)), {
+    controller,
+    sessionId: "critical-light",
+    largeBodyBytes: 1024,
+    hardMaxBytes: 10 * 1024 * 1024,
+    queueMs: 5000,
+  });
+
+  assert.equal(result.admit, true, "a request that cannot grow the heap must not be refused");
+  if (result.admit) {
+    assert.equal(result.lease, null, "a light request never takes a heavy byte lease");
+    assert.equal((await result.request.text()).length, 64, "the body reaches the handler intact");
+  }
+  assert.equal(controller.shedsByReason.resource_pressure, undefined);
+  assert.equal(controller.activeHeavy, 0);
+});
+
+test("critical pressure: an undeclared (chunked) body is treated as heavy", async () => {
+  const controller = new ChatAdmissionController(
+    Number.MAX_SAFE_INTEGER,
+    undefined,
+    0,
+    silentSink,
+    {
+      maxInflightBytes: 1024 * 1024 * 1024,
+      checkPressureSeverity: () => "critical",
+    }
+  );
+  const stream = new ReadableStream({
+    start(source) {
+      source.enqueue(new TextEncoder().encode("x".repeat(64)));
+      source.close();
+    },
+  });
+  const chunked = new Request("http://x/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: stream,
+    // @ts-expect-error -- `duplex` is required by undici for stream bodies.
+    duplex: "half",
+  });
+  assert.equal(chunked.headers.get("content-length"), null, "precondition: size is undeclared");
+
+  const result = await admitChatRequest(chunked, {
+    controller,
+    largeBodyBytes: 1024,
+    hardMaxBytes: 10 * 1024 * 1024,
+    queueMs: 5000,
+  });
+
+  assert.equal(result.admit, false, "an unmeasurable body cannot be proven small");
+  if (!result.admit) assert.equal(result.response.status, 503);
 });
 
 test("pressureSeverity() defaults to normal for a controller with no injected probe", () => {
