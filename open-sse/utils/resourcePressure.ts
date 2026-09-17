@@ -44,8 +44,20 @@ export type ResourcePressureRuntimeOptions = {
   samplerDeps?: SampleResourceSignalsDeps;
 };
 
+export type ResourcePressureCheckOptions = {
+  /**
+   * Declared weight of the request being checked. A `"light"` request still
+   * drives the full check — sampler refresh and tracker state update — but its
+   * verdict is discarded before a 503 is built or logged. Passing the weight in
+   * here (rather than discarding the result at the call site) is what keeps the
+   * logs honest: a fabricated-then-dropped guard would emit a
+   * `returning 503` warn line for a request that was actually admitted.
+   */
+  requestWeight?: ChatPressureWeight;
+};
+
 export type ResourcePressureRuntime = {
-  check: () => ResourcePressureGuardResult | null;
+  check: (options?: ResourcePressureCheckOptions) => ResourcePressureGuardResult | null;
   getObservation: () => ResourcePressureObservation;
   whenRefreshSettled: () => Promise<void>;
   dispose: () => void;
@@ -222,7 +234,14 @@ export function createResourcePressureRuntime(
   };
 
   return {
-    check() {
+    check(options: ResourcePressureCheckOptions = {}) {
+      // A light request is shed by nobody, but it must still drive the whole
+      // check: `scheduleRefresh()` below is the ONLY pump of the sampler, so an
+      // early return here would freeze the observation during light-only
+      // traffic. The weight is consulted at each RETURN instead — that also
+      // keeps `buildCriticalGuard`'s "returning 503" warn line off requests
+      // that were in fact admitted.
+      const light = options.requestWeight === "light";
       let heapUsedMb = 0;
       try {
         heapUsedMb = immediateHeapUsedMb();
@@ -250,19 +269,22 @@ export function createResourcePressureRuntime(
                 lastTransitionAtMs: now,
                 observedAtMs: now,
               };
-        return buildCriticalGuard(
-          "v8_heap_absolute",
-          {
-            heapUsedMb: Math.round(immediate.heapUsedMb),
-            thresholdMb: Math.round(immediate.thresholdMb),
-          },
-          resourcePressureRetryAfterSeconds(state, now)
-        );
+        return light
+          ? null
+          : buildCriticalGuard(
+              "v8_heap_absolute",
+              {
+                heapUsedMb: Math.round(immediate.heapUsedMb),
+                thresholdMb: Math.round(immediate.thresholdMb),
+              },
+              resourcePressureRetryAfterSeconds(state, now)
+            );
       }
       const cacheAge = lastSignals ? Math.max(0, now - lastRefreshAtMs) : Number.POSITIVE_INFINITY;
       if (cacheAge > maxStaleMs || state.severity !== "critical") {
         return null;
       }
+      if (light) return null;
       return buildCriticalGuard(
         state.reason,
         describeCachedPressure({
@@ -297,12 +319,26 @@ let defaultRuntime = createResourcePressureRuntime();
  * retry budget while the gateway is merely nursing its own working set — that
  * blanket refusal was killing workers mid-task. Heavy requests, and any request
  * whose weight the caller did not establish, are refused exactly as before.
+ *
+ * ⚠️ A light request still runs the FULL `check()` — never short-circuit before
+ * it. `check()` is the ONLY thing that pumps the pressure sampler
+ * (`scheduleRefresh()` is called from exactly one place, inside it; there is no
+ * timer). If light-request paths returned early, a period of purely light
+ * traffic would stop refreshing the observation entirely: `state` would freeze
+ * at `critical`, `getResourcePressureObservation()` (which never samples) would
+ * keep reporting it, and the structural gate would shed heavy requests forever
+ * with no path back to `normal` — turning a self-clearing episode into a
+ * permanent one. The weight is therefore passed INTO `check()`, which drops the
+ * verdict at its return sites; discarding a built guard here instead would log a
+ * `returning 503` warn line for a request that was actually admitted.
  */
 export function checkResourcePressureGuard(
   options: { requestWeight?: ChatPressureWeight } = {}
 ): ResourcePressureGuardResult | null {
-  if (options.requestWeight === "light") return null;
-  return defaultRuntime.check();
+  // The weight goes INTO check() — the call always runs (it is the sampler's
+  // only pump) and the runtime drops the verdict for a light request before a
+  // 503 is built or logged.
+  return defaultRuntime.check(options);
 }
 
 export function getResourcePressureObservation(): ResourcePressureObservation {
