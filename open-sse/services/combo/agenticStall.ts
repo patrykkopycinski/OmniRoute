@@ -19,7 +19,8 @@
  *     tool calls.
  *  3. The text content matches the stall shape: a summary/narration block
  *     (`<summary>…`, `# Summary`, `Summary: …`) or short structureless prose
- *     with no actionable payload ("Nothing to save.").
+ *     that reports progress or a no-op instead of answering ("Silent retry
+ *     succeeded"). A literal the request itself requested is exempt — see below.
  *
  * Three terminal-protocol shapes are EXEMPT because their response is turn-over
  * by design, not the summarization defect this guard exists to catch:
@@ -205,7 +206,8 @@ function quotedTerminalLiterals(body: unknown): Set<string> {
         else if (typeof part.content === "string") text = part.content;
       }
       if (!text) continue;
-      // '...' | "..." | `...`
+      // Quoted literals: '...' | "..." | `...`. The 120 cap mirrors
+      // INSTRUCTED_TERMINAL_MAX_CHARS — longer quotes are never echoed whole.
       for (const m of text.matchAll(/['"`]([^'"`\n]{1,120})['"`]/g)) push(m[1]);
     }
   }
