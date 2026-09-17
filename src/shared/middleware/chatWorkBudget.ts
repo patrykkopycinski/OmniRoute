@@ -30,8 +30,17 @@
  *  - a request whose size is UNKNOWN is not charged (no invented number). Its true byte size is
  *    still bounded by the byte-stage hard cap, and its message/tool shape by the structural gate.
  *  - `OMNIROUTE_CHAT_WORK_AMPLIFICATION` is the one empirical constant: retained working-set bytes
- *    per raw request byte. It is measured, not guessed — see
- *    `docs/architecture/admission-lanes.md` §5 for the measurement recipe and the current value.
+ *    per raw request byte. It is BENCHMARK-DERIVED, not guessed: `npm run bench:heap-body`
+ *    measures the real production helpers (entry-point log clone, bounded log clone, per-combo-target
+ *    attempt bodies, token-estimate serialization) and reported 5.2x wire for a 1.3 MB / 480-message
+ *    agent body and 5.2x for the 3.1 MB / 729-message #7847 shape; the default rounds that up to 8.
+ *    Recipe and numbers: `docs/architecture/admission-lanes.md` §5.
+ *  - It prices the REQUEST-BODY copies only. It does not price the rest of the per-request heap
+ *    (translated payloads, compression copies, upstream/SSE buffers), so §5 also records the live
+ *    concurrency measurement and the arithmetic showing at what offered load this ceiling binds.
+ *    Read §5 before treating a green run as "large-context load is now capped": at the concurrency
+ *    this deployment was measured at (<=13 concurrent >=100k-token requests, <=7 MB of prompt text
+ *    in flight) the derived ceiling is ~5% occupied and never sheds.
  */
 import v8 from "node:v8";
 import { createLogger } from "../utils/logger";
@@ -73,12 +82,14 @@ export const MAX_WORK_BUDGET_BYTES = 4 * 1024 * 1024 * 1024;
 export const DEFAULT_LANE_SHARE = 0.5;
 
 /**
- * Retained working-set bytes per raw request byte (measured, see the module docblock).
- * Empirical default; override per deployment once measured on a different payload mix.
+ * Retained working-set bytes per raw request byte (benchmark-derived, see the module docblock).
+ * 5.2x measured for the production body-copy helpers; rounded up to 8 for translation, compression
+ * and dispatch copies the benchmark does not model. Override per deployment once measured on its
+ * own payload mix.
  */
 export const CHAT_WORK_AMPLIFICATION = parsePositiveNumber(
   process.env.OMNIROUTE_CHAT_WORK_AMPLIFICATION,
-  16
+  8
 );
 
 /** Bounded wait for working-set capacity before the retryable 503. */

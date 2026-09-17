@@ -165,10 +165,10 @@ The working-set budget adds the missing metric:
   `OMNIROUTE_CHAT_LARGE_BODY_BYTES` or
   `OMNIROUTE_CHAT_HEAVY_ESTIMATED_TOKENS`. Small requests take no lease: they
   cannot be shed by this budget and their latency is unchanged.
-- **Where the ceiling comes from** — the process memory ceiling (V8 heap limit,
-  or the tighter cgroup limit) divided by the amplification factor, clamped to
-  8 MiB–2 GiB; under heap pressure the effective ceiling is halved instead of
-  waiting for the 0.75 shed ratio to trip.
+- **Where the ceiling comes from** — half of the process memory ceiling (V8 heap
+  limit, or the tighter cgroup limit), clamped to 64 MiB–4 GiB; under heap
+  pressure the effective ceiling is halved instead of waiting for the 0.75 shed
+  ratio to trip.
 - **Fairness** — a per-lane share
   (`OMNIROUTE_CHAT_MAX_WORK_BYTES_PER_LANE`, default half the process budget)
   so one agent session cannot occupy the whole budget and starve another.
@@ -184,3 +184,45 @@ Composition, not a second gate: `withChatAdmission` runs the shipped
 and `composeChatWorkLease` merges both leases so a single release bound to the
 response lifecycle frees the byte lease and the working-set reservation
 together. `POST /v1/chat/completions` and `POST /v1/responses` both use it.
+
+### 5.1 What it binds, measured (2026-09-17)
+
+The amplification constant is not a guess. `npm run bench:heap-body`
+(`scripts/perf/request-body-heap.ts`, `--expose-gc`, real production helpers,
+DATA_DIR redirected to a temp dir) reports retained bytes per mechanism:
+
+| shape | wire | entry log clone | bounded log clone | combo attempt bodies x3 | token-estimate stringify | per request |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 480 msgs / 36 tools | 1.33 MB | 1.43 MB (1.05x) | 0.08 MB | 4.30 MB (3.15x) | 1.37 MB (1.00x) | 7.18 MB (**5.25x**) |
+| 729 msgs / 86 tools (#7847) | 3.06 MB | 3.33 MB (1.04x) | 0.14 MB | 9.99 MB (3.12x) | 3.21 MB (1.00x) | 16.67 MB (**5.20x**) |
+
+So `OMNIROUTE_CHAT_WORK_AMPLIFICATION=8` prices the request-body copies with
+headroom. Two honest limitations, because they decide whether a green run means
+anything:
+
+1. **It prices body copies, not the whole per-request heap.** Translated
+   payloads, compression copies, upstream/SSE buffers and per-hop retries are not
+   in the number. The live heap has held ~1.0 GB in V8 large-object space
+   (objects > 128 KB — big strings/buffers) out of 3.4 GB `heapUsed`, which is
+   the shape those copies produce, but no measurement yet attributes the rest.
+2. **At the concurrency this deployment actually runs, this ceiling does not
+   bind.** Measured from `call_logs` overlap over 26 h (15,238 calls, duration =
+   stream lifetime): max 27 concurrent requests overall, **max 13 concurrent
+   requests with `tokens_in >= 100k`**, and the peak sum of concurrent prompt
+   text was **7.0 MB**. At 1.3-2 MB bodies x 8, that is ~200 MB against a
+   4,192 MB ceiling — ~5% occupied, i.e. the gate stays silent. Doing the
+   arithmetic the other way: to trip a 4,192 MB budget with 1.3 MB bodies, ~400
+   large-context requests must be in flight simultaneously.
+
+Practical consequence: this budget is the missing *quantity* and the right
+backstop for pathological fan-out, but it is **not** the lever that fixes a 7 GB
+heap high-water at ~13 concurrent requests. That gap is the open question, and it
+is a heap-*retainer* question: ~13 concurrent requests cannot explain 3.4 GB of
+live heap, so the resident set is accumulating somewhere that is not proportional
+to in-flight bodies. Answering it needs `HeapProfiler`/snapshot data taken from a
+process with the inspector enabled — the live container has **no** inspector
+(`/proc/net/tcp` has no 9229 listener, `NODE_OPTIONS` carries no `--inspect`), so
+`gc-probe.mjs` / `heap-sample.mjs` / `obj-census.mjs` cannot run there until it is
+re-enabled. Before sizing the ceiling down to something that binds, measure
+`heapUsed` at a shed and price from that; do not tune it from the body-copy
+number alone.
