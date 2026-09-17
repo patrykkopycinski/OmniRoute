@@ -139,3 +139,48 @@ retryable `503` so #7849 does not return.
 To **multiply heaps**, run N independent `DATA_DIR`s (#11024). Never
 `replicas > 1` on one SQLite file (#10350). This section is not a reopen of
 the DATA_DIR scale-out recipe.
+
+## 5. Working-set budget for large-context requests (`chatWorkBudget.ts`)
+
+Sections 1 and 4 bound ONE request: its bytes, its structural estimate, and how
+many heavyweight requests may be in flight. Neither bounds the SUM of in-flight
+large-context working sets, and every shed decision above is taken from a
+heap-used threshold (`heapUsed / heap_size_limit`). Both are the wrong
+instrument for the failure this deployment actually sees: a few concurrent
+agent requests with ~200k-token histories (1–6 MB bodies) that each retain tens
+of MB across parsing, compression, transcript construction and provider
+dispatch. The heap therefore climbs across many requests and only crosses the
+shed ratio once the memory is already committed — at which point the guard sheds
+a request that did not cause the growth, while the process keeps climbing
+between shed decisions.
+
+The working-set budget adds the missing metric:
+
+- **What it bounds** — reserved bytes, not request counts. A large-context
+  request reserves `declared body bytes × OMNIROUTE_CHAT_WORK_AMPLIFICATION`
+  (or the structural token estimate when `Content-Length` is unusable), and the
+  lease is held for the whole response lifetime, SSE streams included — the
+  window in which the working set is actually retained.
+- **Who is priced** — only requests at or above
+  `OMNIROUTE_CHAT_LARGE_BODY_BYTES` or
+  `OMNIROUTE_CHAT_HEAVY_ESTIMATED_TOKENS`. Small requests take no lease: they
+  cannot be shed by this budget and their latency is unchanged.
+- **Where the ceiling comes from** — the process memory ceiling (V8 heap limit,
+  or the tighter cgroup limit) divided by the amplification factor, clamped to
+  8 MiB–2 GiB; under heap pressure the effective ceiling is halved instead of
+  waiting for the 0.75 shed ratio to trip.
+- **Fairness** — a per-lane share
+  (`OMNIROUTE_CHAT_MAX_WORK_BYTES_PER_LANE`, default half the process budget)
+  so one agent session cannot occupy the whole budget and starve another.
+- **Shedding** — excess large-context requests park for a bounded wait and are
+  woken as soon as a lease is released (stream completion); past the window they
+  receive a retryable `503` + `Retry-After` with
+  `error.code=chat_work_budget` (`work_budget`, `lane_work_budget`,
+  `queue_timeout`), so a capacity shed is distinguishable from a policy
+  rejection in `call_logs`.
+
+Composition, not a second gate: `withChatAdmission` runs the shipped
+`admitChatRequest` (sections 1 and 4) first and the working-set budget second,
+and `composeChatWorkLease` merges both leases so a single release bound to the
+response lifecycle frees the byte lease and the working-set reservation
+together. `POST /v1/chat/completions` and `POST /v1/responses` both use it.

@@ -13,6 +13,12 @@ import {
   releaseChatAdmissionWhenDone,
   resolveSessionId,
 } from "@/shared/middleware/chatBodyAdmission";
+import {
+  admitChatWork,
+  CHAT_WORK_QUEUE_MAX_MS,
+  composeChatWorkLease,
+  declaredBodyBytes,
+} from "@/shared/middleware/chatWorkBudget";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "@omniroute/open-sse/config/constants";
 import { resolveStreamFlag } from "@omniroute/open-sse/utils/aiSdkCompat";
 import { errorResponse } from "@omniroute/open-sse/utils/error";
@@ -99,6 +105,7 @@ export async function withCodexPreferredModel(
  */
 async function postHandler(request: any) {
   const sessionId = resolveSessionId(request);
+  const declaredBytes = declaredBodyBytes(request.headers);
   const admissionResult = await admitChatRequest(request, {
     sessionId,
     queueMs: CHAT_ADMISSION_QUEUE_MAX_MS,
@@ -107,8 +114,20 @@ async function postHandler(request: any) {
 
   const admission = admissionResult;
   request = admission.request;
+  // Working-set reservation for large-context requests (`chatWorkBudget.ts`): the byte stage
+  // bounds ONE request's bytes, this bounds the SUM of in-flight large-context work.
+  const work = await admitChatWork({
+    lane: sessionId,
+    bodyBytes: declaredBytes,
+    waitMs: CHAT_WORK_QUEUE_MAX_MS,
+    signal: request.signal,
+  });
+  if (work.admit === false) {
+    admission.lease?.release();
+    return work.response;
+  }
   const finishAdmission = (response: Response) =>
-    releaseChatAdmissionWhenDone(response, admission.lease);
+    releaseChatAdmissionWhenDone(response, composeChatWorkLease(admission.lease, work.lease));
 
   try {
     let parsedBody;
@@ -187,7 +206,7 @@ async function postHandler(request: any) {
       const correlationId = generateRequestId();
       const handlerResponse = releaseChatAdmissionAfterHandler(
         handleChat(resolved, null, resolvedBody, correlationId),
-        admission.lease
+        composeChatWorkLease(admission.lease, work.lease)
       );
       return await withEarlyStreamKeepalive(handlerResponse, {
         signal: request.signal,
@@ -205,6 +224,7 @@ async function postHandler(request: any) {
     return finishAdmission(await handleChat(resolved, null, resolvedBody));
   } catch (error) {
     admission.lease?.release();
+    work.lease.release();
     throw error;
   }
 }

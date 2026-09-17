@@ -24,6 +24,12 @@ import {
   resolveSessionId,
 } from "@/shared/middleware/chatBodyAdmission";
 import {
+  admitChatWork,
+  CHAT_WORK_QUEUE_MAX_MS,
+  composeChatWorkLease,
+  parseDeclaredBodyBytes,
+} from "@/shared/middleware/chatWorkBudget";
+import {
   readCompressionRequestHeader,
   withCompressionHeaderEcho,
 } from "@/shared/utils/compressionHeaderEcho";
@@ -120,8 +126,22 @@ export async function POST(request) {
   if (admissionResult.admit === false) return admissionResult.response;
   const admission = admissionResult;
   request = admission.request;
+  // Working-set reservation for large-context requests (`chatWorkBudget.ts`). The byte stage above
+  // bounds ONE request's bytes and holds it for the SSE lifetime; this bounds the SUM of in-flight
+  // large-context work, which is the quantity that actually fills the V8 heap. Small requests are
+  // never priced and always pass.
+  const work = await admitChatWork({
+    lane: sessionId,
+    bodyBytes: parseDeclaredBodyBytes(requestContentLengthHeader),
+    waitMs: CHAT_WORK_QUEUE_MAX_MS,
+    signal: request.signal,
+  });
+  if (work.admit === false) {
+    admission.lease?.release();
+    return work.response;
+  }
   const finishAdmission = (response: Response) =>
-    releaseChatAdmissionWhenDone(response, admission.lease);
+    releaseChatAdmissionWhenDone(response, composeChatWorkLease(admission.lease, work.lease));
 
   try {
     // One-line marker for diagnosing 413 / Server-Action interceptions.
@@ -257,7 +277,7 @@ export async function POST(request) {
       // eventual handler body; only that confirmed cleanup releases heavyweight capacity.
       const handlerResponse = releaseChatAdmissionAfterHandler(
         handleChat(request, null, parsedBody, reqId),
-        admission.lease
+        composeChatWorkLease(admission.lease, work.lease)
       );
       const streamedResponse = await withEarlyStreamKeepalive(handlerResponse, {
         signal: request.signal,
@@ -278,6 +298,7 @@ export async function POST(request) {
     );
   } catch (error) {
     admission.lease?.release();
+    work.lease.release();
     throw error;
   }
 }

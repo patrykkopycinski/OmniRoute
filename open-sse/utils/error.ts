@@ -68,6 +68,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "cf_mitigated_challenge",
   "chat_admission_busy",
   "chat_history_too_large",
+  "chat_work_budget",
   "chatgpt_web_codex_error",
   "chatgpt_web_codex_turn_failed",
   "chatgpt_session_expired",
@@ -130,6 +131,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "invalid_tool_name",
   "invalid_tools",
   "invalid_trailer",
+  "lane_work_budget",
   "lease_action_invalid",
   "lease_api_key_invalid",
   "lease_authentication_required",
@@ -190,6 +192,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "proxy_family_unavailable",
   "proxy_request_failed",
   "proxy_unreachable",
+  "queue_timeout",
   "quota_exhausted",
   "quota_not_allocated",
   "quota_only",
@@ -281,6 +284,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "video_artifact_url_invalid",
   "vision",
   "claude_web_protocol_error",
+  "work_budget",
   "wreq_unavailable",
 ]);
 
