@@ -140,7 +140,13 @@ test("DefaultExecutor.execute never serializes _omniroute* markers into the upst
       stream: false,
       credentials: {
         apiKey: "test-key",
-        providerSpecificData: { ccSessionId: "session-1" },
+        // #13452/#13798: `*-compatible-*` nodes must carry an explicit baseUrl or
+        // buildUrl() throws rather than silently defaulting to the real Anthropic
+        // API. The stubbed fetch below intercepts this URL; nothing leaves the box.
+        providerSpecificData: {
+          ccSessionId: "session-1",
+          baseUrl: "http://127.0.0.1:1/v1",
+        },
       },
       extendedContext: false,
     } as never);

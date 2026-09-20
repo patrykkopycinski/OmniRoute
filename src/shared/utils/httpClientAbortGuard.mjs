@@ -1,6 +1,7 @@
 "use strict";
 /**
- * HTTP client-abort crash guard (#fix-dev-server-aborted).
+ * HTTP client-abort / recoverable-upstream-timeout crash guard
+ * (#fix-dev-server-aborted, #12861).
  *
  * Node's http.Server turns an 'error' event on an IncomingMessage/ServerResponse
  * into an uncaughtException (and therefore a process exit) WHENEVER the emitter
@@ -14,6 +15,21 @@
  * `net::ERR_CONNECTION_REFUSED`": after auth the SPA opens many polling
  * connections + a live WebSocket; stray client-side socket closes during
  * navigation/HMR were taking the dev server down.
+ *
+ * Two more categories were added after the 2026-09-14 agnes-cn upstream storm
+ * produced two sibling escapes in production: an intentional combo hedge
+ * cancellation (`AbortError: hedge-cancelled` — the sibling leg already won,
+ * so the cancellation is expected, not a fault) and undici fetch failures
+ * (`TypeError: fetch failed` with a socket-level code) against a flapping
+ * upstream. Both are runtime/environmental conditions the request layer
+ * already handles; neither is a process-fatal logic bug.
+ *
+ * A further, unrelated category covers #12861: `directFetchWithBoundedResponseStart`'s
+ * response-start timeout (`DIRECT_RESPONSE_START_TIMEOUT`) is a *recoverable*
+ * signal `proxyFetch.ts` already retries on a fresh socket — but a narrow
+ * timer/promise-settlement race can still deliver its abort reason to a
+ * promise nobody is awaiting anymore, which otherwise kills the whole process
+ * over a single upstream stall that the retry path was built to handle.
  *
  * Two layers:
  *   1. `attachRequestStreamGuards(req, res)` — per-request listeners that absorb
@@ -31,11 +47,30 @@
  * @module
  */
 /**
+ * Abort reasons raised by combo target dispatch. Mirror of
+ * open-sse/services/combo/comboAbortReasons.ts — keep the two in sync.
+ */
+const COMBO_ABORT_REASONS = new Set(["hedge-cancelled", "combo-per-model-timeout"]);
+
+/**
+ * Raw string reasons open-sse/utils/streamHandler.ts passes to
+ * handleDisconnect() / abortController.abort() when the client goes away.
+ */
+const CLIENT_DISCONNECT_REASONS = new Set(["request_signal_aborted", "client_closed", "cancelled"]);
+
+/**
  * @param {unknown} err
  * @returns {boolean} true when `err` represents a client closing the
  *   connection rather than a server-side fault.
  */
 export function isClientAbortError(err) {
+  // open-sse/utils/streamHandler.ts aborts the stream controller with a RAW
+  // STRING reason (getClientAbortReason / handleDisconnect), and undici rejects
+  // with signal.reason verbatim, so a cancellation can surface at the process
+  // level as a bare string rather than an Error object.
+  if (typeof err === "string") {
+    return COMBO_ABORT_REASONS.has(err) || CLIENT_DISCONNECT_REASONS.has(err);
+  }
   if (!err || typeof err !== "object") return false;
   const e = /** @type {NodeJS.ErrnoException} */ (err);
   // Node emits `Error: aborted` (no code) from http.Server#abortIncoming.
@@ -52,9 +87,11 @@ export function isClientAbortError(err) {
   // but their messages do not contain "abort", so the regex above misses them;
   // classifying them as fatal killed the whole gateway on every hedge cancel
   // during a client disconnect (memory-combo incident 2026-09-11/12).
+  // Historical: a leaked abort listener in chatCore/upstreamTimeouts.ts once
+  // rebuilt these as an unhandledRejection (production exit 2026-08-31) — the
+  // leak is fixed at the source upstream; this stays as the last-resort net.
   if (
-    e.message === "hedge-cancelled" ||
-    e.message === "combo-per-model-timeout" ||
+    COMBO_ABORT_REASONS.has(String(e.message)) ||
     e.message === "request_signal_aborted"
   ) {
     return true;
@@ -212,8 +249,100 @@ export function isRequestScopedError(err, { maxDepth = 5 } = {}) {
   return false;
 }
 /**
+ * #12861: a recoverable upstream-fetch timeout that `proxyFetch.ts` already
+ * retries on a fresh socket (see `open-sse/utils/directResponseStartTimeout.ts`).
+ * A narrow timer/promise-settlement race can still deliver its abort reason to
+ * a promise nobody is awaiting anymore, which otherwise surfaces here as an
+ * unhandledRejection/uncaughtException — even though the retry path already
+ * handles this exact condition and normally logs it as a plain 504.
+ *
+ * Kept as a bare string-code check (no import of the `.ts` source of truth)
+ * because this file has to stay build-free/plain-JS-loadable — see the module
+ * docstring. `DIRECT_RESPONSE_START_TIMEOUT_CODE` in
+ * `open-sse/utils/directResponseStartTimeout.ts` is the canonical definition;
+ * keep this string literal in sync with it.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isRecoverableUpstreamTimeoutError(err) {
+  // Same reason-shape tolerance as isIntentionalComboAbort: a bare string
+  // reason rejects waiters with the string itself, not an Error object.
+  if (err === "DIRECT_RESPONSE_START_TIMEOUT") return true;
+  if (!err || typeof err !== "object") return false;
+  return /** @type {NodeJS.ErrnoException} */ (err).code === "DIRECT_RESPONSE_START_TIMEOUT";
+}
+
+/**
+ * Intentional combo-leg cancellation. When a combo dispatches hedged targets,
+ * the losing legs are aborted with a distinctive reason once a sibling wins
+ * (`hedge-cancelled`) or exceeds its per-model budget (`combo-per-model-timeout`)
+ * — see `COMBO_HEDGE_CANCELLED_REASON` / `COMBO_PER_MODEL_TIMEOUT_REASON` in
+ * `open-sse/services/combo/comboAbortReasons.ts` (bare literals duplicated here
+ * because this file must stay build-free; keep in sync). On 2026-09-14 such a
+ * cancellation escaped its promise chain and killed production with
+ * `Error [AbortError]: hedge-cancelled` — the request it belonged to had
+ * already completed 200 via the winning leg.
+ *
+ * Distinct from a *client* abort: only these exact reasons qualify, so an
+ * AbortError from an unknown subsystem still crashes loudly.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isIntentionalComboAbort(err) {
+  const reasons = new Set(["hedge-cancelled", "combo-per-model-timeout"]);
+  // AbortSignal.reason is whatever was handed to abort(): a raw string
+  // reason rejects waiters with the string itself, not an Error object.
+  if (typeof err === "string") return reasons.has(err);
+  if (!err || typeof err !== "object") return false;
+  const e = /** @type {NodeJS.ErrnoException} */ (err);
+  if (e.name !== "AbortError") return false;
+  if (reasons.has(String(e.message))) return true;
+  const cause = /** @type {{ cause?: unknown }} */ (err).cause;
+  return typeof cause === "string" && reasons.has(cause);
+}
+
+/**
+ * A network/IO failure against an upstream or its proxy — undici surfaces it
+ * as `TypeError: fetch failed` (fixed message; the syscall code rides on
+ * `cause`) or as an error carrying a `PROXY_UNREACHABLE` / `UND_ERR_*` code.
+ * On 2026-09-14 one of these (`PROXY_UNREACHABLE` / ECONNRESET to
+ * api.agnes-ai.cn) escaped as an uncaughtException and killed production.
+ * The request that triggered the fetch already fails through the normal
+ * error path; the stray copy delivered to nobody must not be process-fatal.
+ *
+ * The "fetch failed" message match is exact on purpose: it is undici's fixed
+ * wrapping message, so arbitrary TypeErrors still crash loudly.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isUpstreamNetworkError(err) {
+  if (!err || typeof err !== "object") return false;
+  const e = /** @type {NodeJS.ErrnoException} */ (err);
+  if (e.name === "TypeError" && e.message === "fetch failed") return true;
+  switch (e.code) {
+    case "PROXY_UNREACHABLE":
+    case "UND_ERR_SOCKET":
+    case "UND_ERR_CONNECT_TIMEOUT":
+    case "UND_ERR_HEADERS_TIMEOUT":
+    case "UND_ERR_BODY_TIMEOUT":
+    case "ECONNREFUSED":
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+    case "EAI_AGAIN":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
  * Decide whether a process-level uncaughtException/unhandledRejection should be
- * swallowed (benign, request-scoped) or allowed to surface (genuine bug).
+ * swallowed (benign, request-scoped: a client abort, an upstream transport
+ * failure, or a recoverable upstream timeout a retry path already handles —
+ * #12861) or allowed to surface (genuine bug).
  *
  * Pure + exported so it can be unit-tested without poking process listeners.
  *
@@ -223,7 +352,14 @@ export function isRequestScopedError(err, { maxDepth = 5 } = {}) {
  * @returns {boolean} true => swallow (log only), false => re-throw / let crash.
  */
 export function shouldSwallowUncaught(err, origin) {
-  if (!isRequestScopedError(err)) return false;
+  if (
+    !isRequestScopedError(err) &&
+    !isRecoverableUpstreamTimeoutError(err) &&
+    !isIntentionalComboAbort(err) &&
+    !isUpstreamNetworkError(err)
+  ) {
+    return false;
+  }
   // Only swallow when the origin matches what the guard installed for. If some
   // other subsystem raised it (e.g. a deliberate `throw` in a domain), keep the
   // existing crash semantics.
@@ -272,18 +408,16 @@ export function installProcessCrashGuard(log) {
   const logger = typeof log === "function" ? log : console.warn.bind(console);
   process.prependListener("uncaughtException", (err, origin) => {
     if (shouldSwallowUncaught(err, origin)) {
-      logger("warn", "[server] swallowed client-abort uncaughtException:", err?.message ?? err);
+      // The warn line is the only evidence a swallowed error ever happened;
+      // pass the full error object so the stack survives.
+      logger("warn", "[server] swallowed benign uncaughtException:", err);
       return;
     }
     throw err;
   });
   process.prependListener("unhandledRejection", (reason) => {
     if (shouldSwallowUncaught(reason, "unhandledRejection")) {
-      logger(
-        "warn",
-        "[server] swallowed client-abort unhandledRejection:",
-        reason?.message ?? reason
-      );
+      logger("warn", "[server] swallowed benign unhandledRejection:", reason);
       return;
     }
     throw reason;

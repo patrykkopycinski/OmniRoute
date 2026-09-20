@@ -97,8 +97,8 @@ import {
 } from "./cursor/cursorErrors.ts";
 import { getActiveSyncedCatalog } from "../../src/lib/db/models/activeSyncedCatalog.ts";
 import {
-  applyKimiToolCallRecovery,
   createNarrationStreamScrubber,
+  finalizeKimiTurn,
   type NarrationStreamScrubber,
 } from "../utils/kimiToolCallNarration.ts";
 // Composer helpers re-exported for external importers (tests).
@@ -1315,7 +1315,7 @@ export class CursorExecutor extends BaseExecutor {
               // settle when the buffer ends at a clean frame boundary; bytes
               // already in flight belong to this run and are processed by
               // the next scan pass. A bounded grace window (not the full
-              // safety timeout) still ends the turn if no further frame
+              // safety timeout) still ends the work if no further frame
               // completes, so plain-chat latency can't regress.
               const softKv = ctx.endReason === "kv_after_text";
               const nextFrameStarted = pos < buf.length;
@@ -1770,16 +1770,7 @@ export class CursorExecutor extends BaseExecutor {
       }
     }
 
-    // Flush any text the narration scrubber is still holding back (e.g. a
-    // trailing partial trigger that never completed — that is plain prose,
-    // not dialect). totalText must mirror what the client received.
-    const scrubberFlush = ctx.narrationScrubber.finish();
-    if (scrubberFlush) {
-      ctx.totalText += scrubberFlush;
-      emitChunk(ctx, { content: scrubberFlush });
-    }
-
-    applyKimiToolCallRecovery(ctx, (chunk) => emitChunk(ctx, chunk));
+    finalizeKimiTurn(ctx, (chunk) => emitChunk(ctx, chunk));
 
     // OpenAI finish_reason: "tool_calls" if the model invoked any declared
     // tool, else "stop". A turn with mixed text + tool_calls finishes with
@@ -1851,11 +1842,7 @@ export class CursorExecutor extends BaseExecutor {
       }
     }
 
-    // Flush scrubber holdback (partial trigger at end of turn = prose).
-    const scrubberFlush = ctx.narrationScrubber.finish();
-    if (scrubberFlush) ctx.totalText += scrubberFlush;
-
-    applyKimiToolCallRecovery(ctx);
+    finalizeKimiTurn(ctx);
 
     const usage = buildCursorUsage(ctx, body);
     const finishReason = ctx.toolCalls.length > 0 ? "tool_calls" : "stop";

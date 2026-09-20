@@ -266,6 +266,46 @@ export const APIKEY_PROVIDERS_GATEWAYS = {
     apiHint:
       "Create a LiteRouter API key, then use https://api.literouter.com/v1 as the OpenAI-compatible base URL.",
   },
+  greenpt: {
+    id: "greenpt",
+    serviceKinds: ["llm"],
+    alias: "greenpt",
+    name: "GreenPT",
+    icon: "eco",
+    color: "#15803D",
+    textIcon: "GPT",
+    passthroughModels: true,
+    website: "https://greenpt.com",
+    // Not a free tier. The published docs describe a free API subscription with
+    // pay-per-token inference, which is a billing shape rather than free usage,
+    // so this stays false and the note says only what the docs say (#12986).
+    hasFree: false,
+    freeNote:
+      "API subscription is free to create; inference is billed per token. No free inference allowance is published.",
+    apiHint:
+      "Create a GreenPT API key, then use https://api.greenpt.ai/v1 as the OpenAI-compatible base URL. Review jurisdiction, privacy and regional data-transfer requirements before use.",
+  },
+  eurouter: {
+    id: "eurouter",
+    serviceKinds: ["llm"],
+    alias: "eurouter",
+    name: "EURouter",
+    icon: "router",
+    color: "#1D4ED8",
+    textIcon: "EUR",
+    passthroughModels: true,
+    website: "https://eurouter.ai",
+    // No free allowance is published, so no badge. A key was accepted but the
+    // account had no credits, so nothing about pricing tiers is claimed here.
+    hasFree: false,
+    // Deliberately says routing, not residency. EURouter is a router: its own
+    // catalog names the upstream that serves each model (claude-sonnet-5 ->
+    // AWS Bedrock, and 19 models owned by openai, 9 by anthropic, 7 by amazon).
+    // An EU-based router is a routing layer in the EU; where a model actually
+    // executes, and under whose terms, is a per-upstream property (#12985).
+    apiHint:
+      "Create an EURouter API key, then use https://api.eurouter.ai/v1 as the OpenAI-compatible base URL. Models are served by third-party upstreams listed per model in the EURouter catalog; check each upstream jurisdiction, privacy and data-transfer terms before use.",
+  },
   "mnn-ai": {
     id: "mnn-ai",
     serviceKinds: ["llm"],
@@ -1336,6 +1376,24 @@ export const APIKEY_PROVIDERS_GATEWAYS = {
     apiHint:
       "OpenAI-compatible endpoint at https://router.bynara.id/v1. Free-tier models are pinned; others need credit.",
   },
+  xkiro: {
+    id: "xkiro",
+    serviceKinds: ["llm"],
+    alias: "xkiro",
+    name: "xKiro",
+    icon: "hub",
+    color: "#0EA5E9",
+    textIcon: "XK",
+    passthroughModels: true,
+    website: "https://xkiro.com",
+    hasFree: true,
+    freeNote:
+      "Free plan: 5M tokens/day per account across 40 upstream free models — 39 pinned here (Qwen, MiniMax, DeepSeek, Mistral, SenseNova) — no card; past the daily allowance free requests get a 429 until the reset. RPM not published.",
+    authHint:
+      "Create a free account at xkiro.com and paste the key here (Bearer; x-api-key also accepted).",
+    apiHint:
+      "OpenAI-compatible endpoint at https://api.xkiro.com/v1. Public /v1/models tags free rows with access_tier=free; paid models are rejected on the free plan.",
+  },
   regolo: {
     id: "regolo",
     serviceKinds: ["llm"],
@@ -1452,9 +1510,9 @@ export const APIKEY_PROVIDERS_GATEWAYS = {
     passthroughModels: true,
     website: "https://seekai.cc",
     hasFree: true,
-    freeNote: "Signup credit toward available models; amount and eligibility are set by SeekAi, not OmniRoute.",
-    authHint:
-      "Create an API key at https://seekai.cc, then paste it here as a Bearer token.",
+    freeNote:
+      "Signup credit toward available models; amount and eligibility are set by SeekAi, not OmniRoute.",
+    authHint: "Create an API key at https://seekai.cc, then paste it here as a Bearer token.",
     apiHint:
       "Create an API key at https://seekai.cc, then paste it here as a Bearer token. OpenAI-compatible base URL: https://seekai.cc/v1.",
   },

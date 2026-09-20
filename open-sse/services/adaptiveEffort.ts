@@ -36,7 +36,7 @@ const HEAVY_CTX_TOKENS = 60000;
 const HEAVY_TOOL_RESULTS = 6;
 const HEAVY_USER_CHARS = 4000;
 
-type ChatMessageLike = { role?: unknown; content?: unknown };
+export type ChatMessageLike = { role?: unknown; content?: unknown };
 type EffortLevel = "low" | "medium" | "high";
 
 function isString(v: unknown): v is string {

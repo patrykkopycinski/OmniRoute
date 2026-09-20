@@ -18,6 +18,7 @@
 import {
   classifyErrorText,
   hasPerModelQuota,
+  hasPerModelFailureScope,
   isProviderExhaustedReason,
 } from "../accountFallback.ts";
 import {
@@ -27,10 +28,13 @@ import {
 import { RateLimitReason } from "../../config/constants.ts";
 import { isProviderCircuitOpenResult, isRequestScopedUpstreamFailure } from "./comboPredicates.ts";
 import { isCloudflareFingerprintRejection } from "../errorClassifier.ts";
-// #10334 — agentrouter-exclusive predicate shared with the persistence layer
+// #10334 — connection-scope predicate shared with the persistence layer
 // (markAccountUnavailable) so the same-request combo skip and the persisted
 // connection cooldown agree on exactly which fallbackResult shapes qualify.
+// Exclusive in practice to agentrouter's "额度不足" rule: no opencode-family
+// rule matches 403 today, so only agentrouter reaches this predicate via 403.
 import { isAgentrouterConnectionQuotaScope } from "@/sse/services/auth";
+import { isSharedWalletCredits402 } from "../accountFallback/sharedWalletCredits.ts";
 import type { ComboLogger, ResolvedComboTarget } from "./types.ts";
 
 // Connection-level failure statuses: the provider connection itself is likely bad (upstream
@@ -84,9 +88,9 @@ export type ComboExhaustionSets = {
 export type ApplyComboTargetExhaustionOptions = {
   result: { status: number; headers?: Headers | null };
   fallbackResult: Parameters<typeof isProviderExhaustedReason>[0] & {
-    /** #10334 — agentrouter-exclusive; see isAgentrouterConnectionQuotaScope
+    /** #10334 — agentrouter + opencode family; see isAgentrouterConnectionQuotaScope
      * (src/sse/services/auth.ts). Populated only for providers in
-     * HONORS_RULE_LOCK_SCOPE_PROVIDERS (today: agentrouter only). */
+     * HONORS_RULE_LOCK_SCOPE_PROVIDERS (agentrouter + opencode family). */
     ruleScope?: "model" | "provider" | "connection";
     permanent?: boolean;
   };
@@ -115,7 +119,8 @@ export function applyComboTargetExhaustion(
   const { result, sets, log, tag, errorText, structuredError } = opts;
   const provider = target.provider;
 
-  // #10334: agentrouter-exclusive account-wide quota exhaustion ("额度不足")
+  // #10334: connection-scope account-wide quota exhaustion (agentrouter "额度不足";
+  // exclusive in practice — no opencode-family rule matches 403 today)
   // must skip remaining SAME-CONNECTION targets within THIS request too, not
   // just via the persisted cooldown markAccountUnavailable applies for
   // whichever leg runs next. agentrouter is a passthroughModels provider
@@ -162,6 +167,11 @@ export function applyComboTargetExhaustion(
   // rate-limited sibling account, which is the intended, safer outcome.
   if (isAgentrouterConnectionQuotaScope(provider, opts.fallbackResult)) {
     markAgentrouterConnectionQuotaExhaustion(target, { sets, log, tag });
+    return true;
+  }
+
+  if (isSharedWalletCredits402(provider, result.status, opts.errorText)) {
+    markSharedWalletCreditsExhaustion(target, { sets, log, tag });
     return true;
   }
 
@@ -340,8 +350,31 @@ function markAuthLevelExhaustion(
   }
 }
 
+function markSharedWalletCreditsExhaustion(
+  target: ResolvedComboTarget,
+  opts: Pick<ApplyComboTargetExhaustionOptions, "sets" | "log" | "tag">
+): void {
+  const { sets, log, tag } = opts;
+  const provider = target.provider;
+  const connId = target.connectionId ?? undefined;
+  if (connId) {
+    sets.exhaustedConnections.add(`${provider}:${connId}`);
+    log.info(
+      tag,
+      `Provider ${provider} connection ${connId} shared-wallet 402 — marking for skip on remaining targets`
+    );
+  } else {
+    sets.exhaustedProviders.add(provider as string);
+    log.info(
+      tag,
+      `Provider ${provider} shared-wallet 402 (no connectionId) — marking for skip on remaining targets`
+    );
+  }
+}
+
 /**
- * #10334: agentrouter-exclusive connection-scope account quota exhaustion. Mirrors
+ * #10334: connection-scope account quota exhaustion (agentrouter-exclusive in
+ * practice — see above). Mirrors
  * markAuthLevelExhaustion's connectionId-present/absent split — when the target carries a
  * connectionId, only that connection's account is exhausted (sibling agentrouter connections
  * for the same user may still have quota); fall back to whole-provider exhaustion only when no
@@ -408,7 +441,12 @@ function markConnectionLevelExhaustion(
     // must NOT exhaust the connection — other models on the same connection may still succeed.
     // Other connection-level statuses (408/502/503/504/524) indicate the connection itself is
     // bad, so they correctly exhaust even for per-model-quota providers.
-    (result.status === 500 && hasPerModelQuota(provider, rawModel))
+    (result.status === 500 && hasPerModelQuota(provider, rawModel)) ||
+    // #12334: a 404 names one model the account cannot serve, never a bad connection.
+    // On a provider that multiplexes models behind a single credential — a Claude OAuth
+    // subscription serving Fable 5, Opus 5/4.8/4.7/4.6, Sonnet and Haiku — exhausting the
+    // connection here stopped a priority combo at its first step.
+    (result.status === 404 && hasPerModelFailureScope(provider, rawModel))
   ) {
     return;
   }

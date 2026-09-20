@@ -14,8 +14,23 @@ import {
 } from "../../utils/streamHelpers.ts";
 import { evaluateResponseValidation, type ResponseValidationConfig } from "./responseValidation.ts";
 import { getReasoningTokens } from "../../../src/lib/usage/tokenAccounting.ts";
-import type { ComboRetryAfter } from "./types.ts";
 import { REASONING_BUFFER_MIN_TRIGGER } from "../reasoningTokenBuffer.ts";
+import type { ComboRetryAfter } from "./types.ts";
+
+/**
+ * #12659: below this actual `completion_tokens` count, a reasoning-truncated
+ * response is a deliberate tiny-budget capability probe (#10281, e.g. Claude
+ * Code's `/model` check sending `max_tokens: 1`) rather than a genuine
+ * exhaustion of a real reasoning budget -- `completion_tokens` cannot exceed
+ * the caller's `max_tokens`, so a tiny count here proves a tiny budget was
+ * requested without needing to thread the request body through the combo
+ * dispatch call sites. Reuses #10281's own threshold constant instead of
+ * duplicating the magic number; every existing #3587 exhaustion regression
+ * case (512/1024/4096 completion_tokens) sits well above it.
+ */
+function isTinyBudgetTruncation(completionTokens: number): boolean {
+  return completionTokens > 0 && completionTokens < REASONING_BUFFER_MIN_TRIGGER;
+}
 
 /**
  * Detects tool_calls entries within one assistant message that repeat the
@@ -821,33 +836,26 @@ export async function validateResponseQuality(
     // hasReasoningContent is already false and this branch never runs for them.
     const finishReason =
       typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : "";
-    // #probe-truncation-exempt: finish_reason=length means the caller's budget
-    // was consumed, so completion_tokens < REASONING_BUFFER_MIN_TRIGGER implies
-    // the budget itself was sub-256 — a #6274 connectivity probe. Thinking
-    // models with a separated reasoning_content (e.g. qwen3.8 via the
-    // qwen3-thinking parser) burn the tiny budget on reasoning and produce
-    // empty content; the probe still proves the endpoint works, and upstream
-    // API semantics return 200 + finish_reason=length for it. Quality-rejecting
-    // it into a 502 sent every ping into a pointless cross-cell retry loop
-    // (2026-09-13 incident: both cells 502 on max_tokens:10 probes).
     const usage = json?.usage as Record<string, unknown> | undefined;
-    const probeBudget =
-      (Number(usage?.completion_tokens) || 0) > 0 &&
-      (Number(usage?.completion_tokens) || 0) < REASONING_BUFFER_MIN_TRIGGER;
-    if ((finishReason === "length" || finishReason === "max_tokens") && !probeBudget) {
+    const completionTokens = usage ? Number(usage.completion_tokens) || 0 : 0;
+    if (finishReason === "length" || finishReason === "max_tokens") {
+      // #12659: a tiny deliberate capability probe (e.g. `max_tokens: 1`
+      // connectivity/`/model` pings) hits this exact shape on a reasoning
+      // model -- exempt it into the #10281 truncated-200 treatment (pass the
+      // original 200 through unmodified) instead of a genuine quality
+      // failure, so the caller never records a model-lockout for a probe.
+      if (isTinyBudgetTruncation(completionTokens)) return { valid: true };
       return {
         valid: false,
         reason: `reasoning truncated at token limit (finish_reason: ${finishReason}) — no content output`,
       };
     }
     if (usage) {
-      const completionTokens = Number(usage.completion_tokens) || 0;
       const reasoningTokens = getReasoningTokens(usage);
       // If reasoning consumed 90%+ of completion tokens, the model ran out of
-      // budget before producing any content output. Sub-256 budgets are probes
-      // (see #probe-truncation-exempt above) — exempt here too, for providers
-      // that don't report finish_reason reliably.
-      if (completionTokens > 0 && reasoningTokens >= completionTokens * 0.9 && !probeBudget) {
+      // budget before producing any content output.
+      if (completionTokens > 0 && reasoningTokens >= completionTokens * 0.9) {
+        if (isTinyBudgetTruncation(completionTokens)) return { valid: true };
         return {
           valid: false,
           reason: `reasoning consumed ${reasoningTokens}/${completionTokens} tokens — no content output`,

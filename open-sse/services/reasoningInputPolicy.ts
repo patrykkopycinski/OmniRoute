@@ -396,10 +396,11 @@ export function applyReasoningInputPolicy(
 
   if (inputFormat === "chat") {
     if (Array.isArray(body.messages)) {
-      body.messages = scrubForeignChatReasoningDetails(body.messages);
+      let messages = scrubForeignChatReasoningDetails(body.messages);
       if (incompatibleReasoning || mixedState) {
-        body.messages = dropIncompatibleChatReasoning(body.messages, transport);
+        messages = dropIncompatibleChatReasoning(messages, transport);
       }
+      body.messages = messages;
     }
     return { incompatibleReasoning: false };
   }

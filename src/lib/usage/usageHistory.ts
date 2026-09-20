@@ -8,6 +8,7 @@
  */
 
 import { getDbInstance } from "../db/core";
+import { resolveProviderId } from "@/shared/constants/providers";
 import { protectPayloadForLog } from "../logPayloads";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/errorSanitization.ts";
 import {
@@ -470,9 +471,11 @@ function finalizePendingDetailAt(
     completedAt,
     durationMs: Math.max(0, completedAt - details[index].startedAt),
   };
-  storeCompletedDetail(updated);
-  maybeEnrichCompletedDetail(updated, connectionId);
-  scheduleCompletedDetailCleanup(updated.id);
+  const storedCompletedDetail = storeCompletedDetail(updated);
+  if (storedCompletedDetail) {
+    maybeEnrichCompletedDetail(updated, connectionId);
+    scheduleCompletedDetailCleanup(updated.id);
+  }
 
   details.splice(index, 1);
   pendingById.delete(updated.id);
@@ -733,7 +736,7 @@ export async function saveRequestUsage(entry: UsageEntry) {
         )
         .get(
           timestamp,
-          entry.provider || null,
+          (entry.provider ? resolveProviderId(entry.provider) : null),
           entry.model || null,
           entry.connectionId || null,
           entry.apiKeyId || null,
@@ -761,7 +764,7 @@ export async function saveRequestUsage(entry: UsageEntry) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       ).run(
-        entry.provider || null,
+        (entry.provider ? resolveProviderId(entry.provider) : null),
         entry.model || null,
         entry.connectionId || null,
         accountIdentity.accountKey,

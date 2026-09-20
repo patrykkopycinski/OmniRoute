@@ -29,6 +29,12 @@ lastUpdated: 2026-06-28
 
 ## Quick Run
 
+> **Self-host in one command?** See the
+> [Self-Host Guide](../getting-started/SELF_HOST_GUIDE.md) —
+> `docker compose -f docker-compose.selfhost.yml up -d` (published image +
+> Redis, loopback-only, no profile choice). The Quick Run below is the
+> single-container path for users who already run Redis elsewhere.
+
 ```bash
 docker run -d \
   --name omniroute \
@@ -132,12 +138,39 @@ A bind mount is what makes the path trustworthy: OmniRoute reads
 whose children are mounts, which is exactly the `/host-home` shape above) while
 still refusing unmounted ones.
 
-### Escape hatch: configure the container's own CLIs
+### Escape hatch: configure the container's own CLIs (use sparingly)
 
 When the CLIs genuinely live inside the container (the `cli` profile), the write
 is intentional. Pass `--allow-container-write` to any `setup-*` command, or set
 `OMNIROUTE_ALLOW_CONTAINER_CONFIG_WRITE=true` for the server. The write proceeds
 with a warning that it will not survive the container.
+
+> **Security warning — `cli` profile + `docker.sock` mount.**
+> The `cli` profile bind-mounts `/var/run/docker.sock` so the in-container
+> auto-updater can recreate the stack from the host daemon
+> (`src/lib/system/autoUpdate.ts` probes for that socket and skips the
+> Docker path when it is absent). That socket is **a host-root trust
+> boundary**: anything that can reach it drives the host Docker daemon as
+> root — it can create, inspect, stop and remove any container on the host.
+> Implications:
+>
+> 1. **Never expose the `cli` profile's port to the network.** Publish
+>    it on `127.0.0.1` (`ports: "127.0.0.1:${DASHBOARD_PORT:-20128}:..."`)
+>    — a LAN-reachable `cli` profile turns any dashboard-level RCE into
+>    full host compromise.
+> 2. **Do not bind any extra host directories into the `cli` profile.**
+>    The Docker socket plus any further mount gives the container full
+>    read/write to your filesystem and host config. If you need a tool to
+>    see a project, run it locally with the CLI binary — do not mount it
+>    into the `cli` container.
+>
+> If you do not need in-container auto-update, leave the `cli` profile off
+> (`COMPOSE_PROFILES=core,redis` or shorter). The other profiles do not
+> mount the Docker socket.
+>
+> See `docs/security/MITM-TPROXY-DECRYPT.md` (git; not compiled into `/docs`) for the related threat model
+> around MITM, and `docs/security/SUPPLY_CHAIN.md` for the
+> `codex`/`claude-code`/`droid`/`openclaw` binary provenance chain.
 
 ## Redis Sidecar
 
@@ -311,6 +344,8 @@ Beyond the defaults documented in [ENVIRONMENT.md](../reference/ENVIRONMENT.md),
 | `AUTO_UPDATE_HOST_REPO_DIR`   | Host path mounted into `cli` profile at `/workspace/omniroute` for self-update workflows                                                                                   | `.` (current directory)  |
 | `OMNIROUTE_MEMORY_MB`         | Runtime Node heap ceiling for the Docker standalone server; overrides the image default above. Coding agents: `8192`+ (see [runtime RAM](#runtime-ram-for-coding-agents)). | `1024`                   |
 | `DASHBOARD_PORT` / `API_PORT` | Override exposed ports for dashboard (20128) and API (20129)                                                                                                               | `20128` / `20129`        |
+| `APP_BIND_HOST`               | Host interface docker-compose publishes the dashboard/API/live-WS ports on. With `REQUIRE_API_KEY=false` (the default), `0.0.0.0` exposes the anonymous `/v1` proxy to the LAN — only widen with `REQUIRE_API_KEY=true` or a reverse proxy in front. | `127.0.0.1`              |
+| `CLIPROXY_BIND_HOST`          | Host interface docker-compose publishes the `cliproxyapi` sidecar on — its data volume holds provider credentials.                                                        | `127.0.0.1`              |
 | `OMNIROUTE_PLUGINS_DIR`       | Directory the runtime plugin scanner reads and installs into. Set it when plugins are bind-mounted: the default follows `HOME`, which an image need not export.            | `~/.omniroute/plugins`   |
 | `OMNIROUTE_BASE_PATH`         | URL subpath when the app is published behind a reverse proxy (e.g. `/omniroute`)                                                                                           | _(empty = root)_         |
 | `NEXT_PUBLIC_BASE_URL`        | Public browser origin including the subpath (e.g. `https://host/omniroute`)                                                                                                | unset                    |

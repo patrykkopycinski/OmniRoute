@@ -151,7 +151,7 @@ test("streaming: surfaces narrated call via onToolCall callback", () => {
 test("streaming: narration split across many tiny deltas is fully held back", () => {
   const s = createNarrationStreamScrubber();
   const full =
-    "Intro.\n\nAssistant called tool terminal (call_2) with arguments: {\"code\":\"print(1)\"}" +
+    'Intro.\n\nAssistant called tool terminal (call_2) with arguments: {"code":"print(1)"}' +
     DELIM +
     "\nDone.";
   let out = "";
@@ -169,8 +169,7 @@ test("streaming: narration split across many tiny deltas is fully held back", ()
 test("streaming: char-by-char narration also fires onToolCall", () => {
   const calls: unknown[] = [];
   const s = createNarrationStreamScrubber(() => calls.push(1));
-  const full =
-    'Assistant called tool execute_code (call_3) with arguments: {"code":"x=1"}' + DELIM;
+  const full = 'Assistant called tool execute_code (call_3) with arguments: {"code":"x=1"}' + DELIM;
   for (const ch of full) s.feed(ch);
   s.finish();
   assert.equal(calls.length, 1);
@@ -247,7 +246,7 @@ test("streaming: recovered call from truncated-then-completed narration", () => 
   let out = s.feed("A.\nAssistant called");
   out += s.feed(" tool terminal (call_z) with arguments: ");
   out += s.feed('{"a":');
-  out += s.feed('1}');
+  out += s.feed("1}");
   out += s.feed("<|close|>argument<|sep|>");
   out += s.finish();
   assert.equal(out, "A.\n");
@@ -319,8 +318,7 @@ test("recovery: scrub now runs even when structured tool calls exist", () => {
 test("recovery: still synthesizes a call when none structured existed", () => {
   const ctx = {
     totalText:
-      'Working.\nAssistant called tool terminal (call_b) with arguments: {"command":"ls"}' +
-      DELIM,
+      'Working.\nAssistant called tool terminal (call_b) with arguments: {"command":"ls"}' + DELIM,
     toolCalls: [],
     emittedToolCallIndex: 0,
   };
@@ -336,4 +334,21 @@ test("recovery: still synthesizes a call when none structured existed", () => {
 test("recovery: empty text returns false, no crash", () => {
   const ctx = { totalText: "", toolCalls: [], emittedToolCallIndex: 0 };
   assert.equal(applyKimiToolCallRecovery(ctx), false);
+});
+
+// EOF while still on an unterminated "Assistant called tool" head line: the
+// line never reached the narration marker, so it was ordinary prose and must
+// be emitted verbatim rather than swallowed as truncated dialect.
+test("streaming: unterminated narration head at EOF is flushed as prose", () => {
+  const s = createNarrationStreamScrubber();
+  let out = s.feed("Assistant called tool");
+  out += s.finish();
+  assert.equal(out, "Assistant called tool");
+});
+
+test("streaming: narration head text without marker survives EOF mid-line", () => {
+  const s = createNarrationStreamScrubber();
+  let out = s.feed("Assistant called tool xyz");
+  out += s.finish();
+  assert.equal(out, "Assistant called tool xyz");
 });

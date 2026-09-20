@@ -19,6 +19,7 @@ export type RequestPipelinePayloads = {
   providerResponse?: JsonRecord;
   clientResponse?: JsonRecord;
   error?: JsonRecord;
+  toolLoop?: { legs: JsonRecord[] };
   payloadRuleDiff?: JsonRecord;
   streamChunks?: {
     provider?: string[];
@@ -49,6 +50,7 @@ type RequestLogger = {
   logConvertedResponse: (body: unknown) => void;
   appendConvertedChunk: (chunk: string) => void;
   logError: (error: unknown, requestBody?: unknown) => void;
+  logToolLoopReceipt: (receipt: unknown) => void;
   logPayloadRuleDiff: (entries: unknown[]) => void;
   getPipelinePayloads: () => RequestPipelinePayloads | null;
 };
@@ -76,6 +78,7 @@ const MAX_LOG_STRING_LENGTH = 64 * 1024;
 // existing plain-constant shape; CHAT_LOG_ARRAY_TAIL_ITEMS still overrides it.
 export const MAX_LOG_ARRAY_ITEMS = getChatLogArrayTailItems();
 const MAX_LOG_OBJECT_KEYS = 80;
+const MAX_TOOL_LOOP_LEGS = 4;
 
 function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   if (!headers) return {};
@@ -89,6 +92,7 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   const sensitiveKeys = [
     "authorization",
     "x-api-key",
+    "apikey",
     "cookie",
     "token",
     "runtimekey",
@@ -108,7 +112,8 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
       masked[key] = "[REDACTED]";
       continue;
     }
-    if (!sensitiveKeys.some((candidate) => lowerKey.includes(candidate))) {
+    const compactedKey = lowerKey.replace(/-/g, "");
+    if (!sensitiveKeys.some((candidate) => compactedKey.includes(candidate.replace(/-/g, "")))) {
       continue;
     }
 
@@ -284,7 +289,16 @@ function compactPipelinePayloads(
       continue;
     }
 
-    result[key as keyof RequestPipelinePayloads] = value;
+    if (key === "toolLoop" && value && typeof value === "object") {
+      const legs = (value as { legs?: unknown }).legs;
+      if (Array.isArray(legs) && legs.length > 0) {
+        result.toolLoop = { legs: legs as JsonRecord[] };
+      }
+      continue;
+    }
+
+    const payloadKey = key as Exclude<keyof RequestPipelinePayloads, "streamChunks" | "toolLoop">;
+    result[payloadKey] = value as JsonRecord;
   }
 
   return hasOwnValues(result) ? result : null;
@@ -386,6 +400,7 @@ export async function createRequestLogger(
       logConvertedResponse() {},
       appendConvertedChunk: chunkMethods.appendConvertedChunk,
       logError() {},
+      logToolLoopReceipt() {},
       logPayloadRuleDiff() {},
       getPipelinePayloads() {
         return routeDecision ? { routeDecision } : null;
@@ -471,6 +486,13 @@ export async function createRequestLogger(
       };
     },
 
+    logToolLoopReceipt(receipt) {
+      const legs = payloads.toolLoop?.legs ?? [];
+      if (legs.length >= MAX_TOOL_LOOP_LEGS) return;
+      const cloned = cloneBoundedForLog(receipt);
+      if (!cloned || typeof cloned !== "object" || Array.isArray(cloned)) return;
+      payloads.toolLoop = { legs: [...legs, cloned as JsonRecord] };
+    },
     logPayloadRuleDiff(entries) {
       if (!Array.isArray(entries) || entries.length === 0) return;
       payloads.payloadRuleDiff = {

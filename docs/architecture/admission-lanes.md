@@ -67,6 +67,10 @@ complementary; operators should know which one they are looking at.
   the episode has actually lasted since the state transition
   (`resourcePressureRetryAfterSeconds`, floored at 5s and capped at 120s), so a
   client that honours it does not hot-loop against a multi-minute episode.
+  ingested. PSI is read from this unit's cgroup `memory.pressure` when present
+  (`open-sse/utils/resourcePressureSampler.ts`); `/proc/pressure/memory` is
+  host-wide and is only the fallback on bare metal / cgroup v1, so a swapping
+  host cannot 503 an idle container.
 - **Tuning:**
   - `OMNIROUTE_CHAT_MAX_INFLIGHT_BYTES` — override for the auto-derived byte budget
   - `OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT` — legacy request-count cap, opt-in only

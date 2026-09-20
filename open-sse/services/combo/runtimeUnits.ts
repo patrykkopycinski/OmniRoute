@@ -80,6 +80,7 @@ async function executeModelUnit(args: {
   isModelAvailable?: IsModelAvailable;
   failoverBeforeRetry: unknown;
   effectiveComboStrategy: string;
+  fallbackAttempts: number;
 }): Promise<Response> {
   if (args.isModelAvailable) {
     const available = await args.isModelAvailable(args.unit.modelStr, args.unit);
@@ -98,6 +99,7 @@ async function executeModelUnit(args: {
     ...args.unit,
     effectiveComboStrategy: args.effectiveComboStrategy,
     failoverBeforeRetry: args.failoverBeforeRetry,
+    fallbackAttempts: args.fallbackAttempts,
   });
 }
 
@@ -161,6 +163,7 @@ async function executeRuntimeUnit(args: {
   nesting: ComboNestingContext;
   failoverBeforeRetry: unknown;
   effectiveComboStrategy: string;
+  fallbackAttempts: number;
 }): Promise<Response> {
   if (args.unit.kind === "model") {
     return executeModelUnit({
@@ -170,6 +173,7 @@ async function executeRuntimeUnit(args: {
       isModelAvailable: args.isModelAvailable,
       failoverBeforeRetry: args.failoverBeforeRetry,
       effectiveComboStrategy: args.effectiveComboStrategy,
+      fallbackAttempts: args.fallbackAttempts,
     });
   }
   return executeComboRefUnit({
@@ -308,6 +312,7 @@ export async function executeRuntimeUnitCombo(args: {
         nesting: args.nesting,
         failoverBeforeRetry: args.config.failoverBeforeRetry,
         effectiveComboStrategy: effectiveStrategy,
+        fallbackAttempts: fallbackCount,
       });
       // feat/combo-step-params: response-side guards BEFORE quality
       // validation, mirroring the main-loop seam. Reads via clone inside the
