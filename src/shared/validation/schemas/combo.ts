@@ -30,6 +30,7 @@ export const comboStepParamsSchema = z
     extraBody: z.record(z.string(), z.unknown()).optional(),
     mergeReasoningIntoContent: z.boolean().optional(),
     stripResponseFormat: z.boolean().optional(),
+    toolCallToContent: z.boolean().optional(),
   })
   .optional();
 export const comboModelStepInputSchema = z.object({

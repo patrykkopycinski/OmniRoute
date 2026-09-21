@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   applyComboStepParams,
   mergeReasoningIntoContentIfEmpty,
+  promoteToolCallToContentIfEmpty,
   applyComboStepResponseGuards,
 } from "../../open-sse/services/combo/stepParams.ts";
 
@@ -111,6 +112,62 @@ test("merge: no-op when disabled (default)", () => {
 
 test("merge: no-op when reasoning absent", () => {
   const out = mergeReasoningIntoContentIfEmpty({ content: "" }, true);
+  assert.equal(out, null);
+});
+
+// ─── promoteToolCallToContentIfEmpty ───
+
+test("toolCall: empty content + tool_calls → content gets raw arguments string, tool_calls dropped", () => {
+  const out = promoteToolCallToContentIfEmpty(
+    {
+      content: "",
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "extract", arguments: '{"facts":["a"]}' } }],
+    },
+    true
+  );
+  assert.equal(out?.content, '{"facts":["a"]}');
+  assert.equal(out?.tool_calls, undefined);
+});
+
+test("toolCall: passes through non-strict-JSON arguments verbatim (parse-safe, no JSON.parse attempted)", () => {
+  const raw = '{"facts": ["a",],}'; // trailing commas — invalid JSON
+  const out = promoteToolCallToContentIfEmpty(
+    { content: null, tool_calls: [{ function: { arguments: raw } }] },
+    true
+  );
+  assert.equal(out?.content, raw);
+});
+
+test("toolCall: no-op when content already populated", () => {
+  const out = promoteToolCallToContentIfEmpty(
+    { content: "already here", tool_calls: [{ function: { arguments: "{}" } }] },
+    true
+  );
+  assert.equal(out, null);
+});
+
+test("toolCall: no-op when disabled (default off)", () => {
+  const out = promoteToolCallToContentIfEmpty(
+    { content: "", tool_calls: [{ function: { arguments: "{}" } }] },
+    false
+  );
+  assert.equal(out, null);
+  assert.equal(
+    promoteToolCallToContentIfEmpty({ content: "", tool_calls: [{ function: { arguments: "{}" } }] }, undefined),
+    null
+  );
+});
+
+test("toolCall: no-op when tool_calls absent/empty even with empty content", () => {
+  assert.equal(promoteToolCallToContentIfEmpty({ content: "" }, true), null);
+  assert.equal(promoteToolCallToContentIfEmpty({ content: "", tool_calls: [] }, true), null);
+});
+
+test("toolCall: no-op when first tool_call has no string arguments", () => {
+  const out = promoteToolCallToContentIfEmpty(
+    { content: "", tool_calls: [{ function: { arguments: 123 } }] },
+    true
+  );
   assert.equal(out, null);
 });
 
@@ -478,4 +535,104 @@ test("guards: survives unparseable JSON body", async () => {
   const res = new Response("not json{", { headers: { "content-type": "application/json" } });
   const out = await applyComboStepResponseGuards(res, { mergeReasoningIntoContent: true }, false);
   assert.equal(out, res);
+});
+
+// ─── guards: toolCallToContent ───
+
+test("guards: toolCallToContent=false (default) leaves empty-content+tool_calls response UNCHANGED (passthrough)", async () => {
+  const payload = {
+    choices: [
+      {
+        finish_reason: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [{ id: "call_1", function: { name: "extract", arguments: '{"a":1}' } }],
+        },
+      },
+    ],
+  };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  // toolCallToContent omitted entirely — mutation check: a revert that makes
+  // the guard fire unconditionally (ignoring the flag) breaks this.
+  const out = await applyComboStepResponseGuards(res, {}, false);
+  assert.equal(out, res);
+});
+
+test("guards: toolCallToContent=true + empty content + tool_calls → merged, tool_calls dropped, finish_reason=stop", async () => {
+  const payload = {
+    choices: [
+      {
+        finish_reason: "tool_calls",
+        message: {
+          content: "",
+          tool_calls: [{ id: "call_1", function: { name: "extract", arguments: '{"facts":["a"]}' } }],
+        },
+      },
+    ],
+  };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  const out = await applyComboStepResponseGuards(res, { toolCallToContent: true }, false);
+  const parsed = await out.json();
+  assert.equal(parsed.choices[0].message.content, '{"facts":["a"]}');
+  assert.equal(parsed.choices[0].message.tool_calls, undefined);
+  assert.equal(parsed.choices[0].finish_reason, "stop");
+});
+
+test("guards: toolCallToContent=true + NORMAL non-empty content → unchanged passthrough (guard is a no-op)", async () => {
+  const payload = {
+    choices: [
+      {
+        finish_reason: "stop",
+        message: { content: "already has an answer", tool_calls: undefined },
+      },
+    ],
+  };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  const out = await applyComboStepResponseGuards(res, { toolCallToContent: true }, false);
+  assert.equal(out, res);
+});
+
+test("guards: toolCallToContent=true skips streaming requests (same seam as mergeReasoningIntoContent)", async () => {
+  const payload = {
+    choices: [{ message: { content: "", tool_calls: [{ function: { arguments: "{}" } }] } }],
+  };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  const out = await applyComboStepResponseGuards(res, { toolCallToContent: true }, true);
+  assert.equal(out, res);
+});
+
+test("guards: mergeReasoningIntoContent and toolCallToContent compose — reasoning wins when both present, tool guard is then a no-op", async () => {
+  const payload = {
+    choices: [
+      {
+        finish_reason: "tool_calls",
+        message: {
+          content: "",
+          reasoning_content: "reasoned answer",
+          tool_calls: [{ function: { arguments: '{"x":1}' } }],
+        },
+      },
+    ],
+  };
+  const res = new Response(JSON.stringify(payload), {
+    headers: { "content-type": "application/json" },
+  });
+  const out = await applyComboStepResponseGuards(
+    res,
+    { mergeReasoningIntoContent: true, toolCallToContent: true },
+    false
+  );
+  const parsed = await out.json();
+  // Reasoning merge runs first and fills content, so the tool-call guard's
+  // own empty-content check makes it a no-op — tool_calls survives.
+  assert.equal(parsed.choices[0].message.content, "reasoned answer");
+  assert.ok(Array.isArray(parsed.choices[0].message.tool_calls));
 });
