@@ -22,6 +22,20 @@
  *    reasoning-parser classifies the WHOLE answer as reasoning_content
  *    (no `</think>` marker ever appears), so downstream readers would
  *    otherwise starve and retry-loop.
+ *  - `params.toolCallToContent` — response-side: when a non-streaming
+ *    response comes back with empty `content` but non-empty `tool_calls`,
+ *    promote the FIRST tool call's raw `arguments` string into `content`,
+ *    drop `tool_calls`, and clear `finish_reason` to `"stop"`. Required for
+ *    extraction-shaped requests (tools bound + JSON expected in content):
+ *    some providers (qwen3 family) answer with `finish_reason:"tool_calls"`
+ *    and EMPTY content instead of textual JSON when tools are present —
+ *    HTTP 200, so the gateway never fails over, and a content-only consumer
+ *    (e.g. Hindsight's extraction path) reads nothing and errors with
+ *    "Provider returned empty message content". The arguments string is
+ *    passed through verbatim — no JSON.parse/stringify round-trip — so the
+ *    guard stays parse-safe even if the model emits non-strict-JSON
+ *    arguments; the caller's own JSON parsing (unchanged) is the single
+ *    source of truth for validity.
  *
  * Everything here is additive and off-by-default: a step without `params`
  * takes the exact pre-existing path (schema default = field absent).
@@ -33,6 +47,7 @@ export type ComboStepParams = {
   extraBody?: Record<string, unknown>;
   mergeReasoningIntoContent?: boolean;
   stripResponseFormat?: boolean;
+  toolCallToContent?: boolean;
 };
 
 const TEMPLATE_KWARGS = "chat_template_kwargs";
@@ -126,6 +141,45 @@ export function mergeReasoningIntoContentIfEmpty(
   return merged;
 }
 
+type ToolCallShape = {
+  id?: unknown;
+  type?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+};
+
+/**
+ * Response-side guard: promote a tool call's raw arguments into content when
+ * content is empty. Only applies when the step opted in via
+ * `toolCallToContent` AND the parsed message carries empty content plus a
+ * non-empty `tool_calls` array. Returns the (possibly new) message object;
+ * null = not applicable.
+ *
+ * Parse-safe by design: the `arguments` string is passed through VERBATIM —
+ * no JSON.parse/JSON.stringify round-trip here. A model that emits
+ * non-strict-JSON arguments (trailing comma, single quotes) still gets its
+ * raw text handed to the caller's own parser unchanged; this guard never
+ * throws on malformed JSON because it never attempts to parse it.
+ */
+export function promoteToolCallToContentIfEmpty(
+  parsed:
+    | { content?: unknown; tool_calls?: unknown; finish_reason?: unknown }
+    | null
+    | undefined,
+  enabled: boolean | undefined
+): Record<string, unknown> | null {
+  if (!enabled || !parsed || typeof parsed !== "object") return null;
+  const content = parsed.content;
+  const contentEmpty = content == null || (typeof content === "string" && content.trim() === "");
+  const toolCalls = parsed.tool_calls;
+  if (!contentEmpty || !Array.isArray(toolCalls) || toolCalls.length === 0) return null;
+  const first = toolCalls[0] as ToolCallShape | undefined;
+  const args = first?.function?.arguments;
+  if (typeof args !== "string" || args.length === 0) return null;
+  const merged: Record<string, unknown> = { ...parsed, content: args };
+  delete merged.tool_calls;
+  return merged;
+}
+
 /**
  * Response-side guard for per-step params: on a successful NON-streaming
  * response, when the step opted into mergeReasoningIntoContent and the parsed
@@ -144,7 +198,7 @@ export async function applyComboStepResponseGuards(
   params: ComboStepParams | null | undefined,
   clientRequestedStream: boolean
 ): Promise<Response> {
-  if (!params?.mergeReasoningIntoContent) return result;
+  if (!params?.mergeReasoningIntoContent && !params?.toolCallToContent) return result;
   if (clientRequestedStream) return result;
   if (!result || typeof result.json !== "function") return result;
   const ct = result.headers?.get?.("content-type") || "";
@@ -166,11 +220,37 @@ export async function applyComboStepResponseGuards(
   }
   const record = parsed as Record<string, unknown> | null;
   const choices = record?.choices as Array<Record<string, unknown>> | undefined;
-  const choice = choices?.[0]?.message as
-    { content?: unknown; reasoning_content?: unknown } | undefined;
-  const merged = mergeReasoningIntoContentIfEmpty(choice, true);
-  if (!merged || !choices) return result;
-  choices[0].message = merged;
+  let choice = choices?.[0]?.message as
+    | { content?: unknown; reasoning_content?: unknown; tool_calls?: unknown; finish_reason?: unknown }
+    | undefined;
+  let changed = false;
+
+  const reasoningMerged = mergeReasoningIntoContentIfEmpty(
+    choice,
+    params.mergeReasoningIntoContent
+  );
+  if (reasoningMerged) {
+    choice = reasoningMerged;
+    changed = true;
+  }
+
+  // toolCallToContent runs AFTER the reasoning merge above: if reasoning
+  // already filled content, the tool-call guard's own empty-content check
+  // makes it a no-op, so the two never fight over the same field.
+  const toolCallPromoted = promoteToolCallToContentIfEmpty(choice, params.toolCallToContent);
+  if (toolCallPromoted) {
+    choice = toolCallPromoted;
+    changed = true;
+    // finish_reason:"tool_calls" is now a lie once tool_calls is dropped and
+    // content carries the (raw) arguments string instead — normalize it to
+    // "stop" (OpenAI-compatible shape: finish_reason lives on the CHOICE,
+    // not the message) so downstream consumers that branch on it don't loop
+    // waiting for a tool round-trip that will never come.
+    if (choices) choices[0].finish_reason = "stop";
+  }
+
+  if (!changed || !choices) return result;
+  choices[0].message = choice;
   // Rebuild the response body from the parsed JSON. NEVER forward the
   // original headers object: it carries the upstream content-length, which
   // described the PRE-merge body. A mutated body + stale CL = every strict
