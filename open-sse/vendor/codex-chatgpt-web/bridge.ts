@@ -5,11 +5,13 @@ import type {
   CodexProviderContinuationState,
   CodexUsage,
 } from "./types";
+import { projectCodexPublicError } from "../../utils/codexPublicError";
 import { adapterFailureFromMessage, classifyError, type CodexErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
+import { plaintextCollaborationFields } from "../../translator/response/openai-responses/collaborationPlaintextMarker";
 
 function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
@@ -46,7 +48,8 @@ function responsesUsage(usage: CodexUsage | undefined): Record<string, unknown> 
 }
 
 function responseError(status: number, type: string, message: string): CodexErrorPayload {
-  return classifyError(status, type, message);
+  const classified = classifyError(status, type, message);
+  return projectCodexPublicError({ status, type: classified.type, code: classified.code });
 }
 
 function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>): {
@@ -54,14 +57,25 @@ function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>
   error: CodexErrorPayload;
 } {
   if (event.status === undefined && event.errorType === undefined && event.code === undefined) {
-    return adapterFailureFromMessage(event.message);
+    const fallback = adapterFailureFromMessage(event.message);
+    return {
+      httpStatus: fallback.httpStatus,
+      error: projectCodexPublicError({
+        status: fallback.httpStatus,
+        type: fallback.error.type,
+        code: fallback.error.code,
+      }),
+    };
   }
   const fallback = adapterFailureFromMessage(event.message);
   const httpStatus = event.status ?? fallback.httpStatus;
   const error = classifyError(httpStatus, event.errorType ?? fallback.error.type, event.message);
   if (event.errorType !== undefined) error.type = event.errorType;
   if (event.code !== undefined) error.code = event.code;
-  return { httpStatus, error };
+  return {
+    httpStatus,
+    error: projectCodexPublicError({ status: httpStatus, type: error.type, code: error.code }),
+  };
 }
 
 export { adapterFailureFromMessage } from "./lib/errors";
@@ -70,21 +84,6 @@ interface OutputItem {
   type: string;
   id: string;
   [key: string]: unknown;
-}
-
-const PLAINTEXT_COLLABORATION_CALLS = new Set(["spawn_agent", "send_message", "followup_task"]);
-
-/**
- * Codex MultiAgent V2 normally treats collaboration message arguments as backend ciphertext.
- * An empty encrypted_function_args list is the protocol's explicit plaintext-delivery marker.
- */
-function plaintextCollaborationFields(
-  namespace: string | undefined,
-  name: string
-): Record<string, unknown> {
-  return namespace === "collaboration" && PLAINTEXT_COLLABORATION_CALLS.has(name)
-    ? { encrypted_function_args: [] }
-    : {};
 }
 
 export type ResponsesTerminalStatus = "completed" | "failed" | "incomplete";
@@ -1314,7 +1313,7 @@ export function buildResponseJSON(
 }
 
 export function formatErrorResponse(status: number, type: string, message: string): Response {
-  return new Response(JSON.stringify({ error: classifyError(status, type, message) }), {
+  return new Response(JSON.stringify({ error: responseError(status, type, message) }), {
     status,
     headers: { "Content-Type": "application/json" },
   });

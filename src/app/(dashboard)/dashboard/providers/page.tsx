@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Suspense } from "react";
 import { Card, CardSkeleton, Badge, Button, CollapsibleSection } from "@/shared/components";
 import {
   AGGREGATOR_PROVIDER_IDS,
@@ -61,6 +61,7 @@ import NoAuthProvidersSection from "./components/NoAuthProvidersSection";
 import HighlightableProviderCard from "./components/HighlightableProviderCard";
 import ProviderCountBadge from "./components/ProviderCountBadge";
 import ProviderSummaryCard from "./components/ProviderSummaryCard";
+import DeprecatedProviderBanner from "./components/DeprecatedProviderBanner";
 import {
   buildCompactProviderEntriesForPage,
   getCompactProviderAuthType,
@@ -211,7 +212,7 @@ async function loadOauthEnvRepairStatus(): Promise<{
   }
 }
 
-export default function ProvidersPage() {
+function ProvidersPageContent() {
   const router = useRouter();
   const [connections, setConnections] = useState<any[]>([]);
   const [providerNodes, setProviderNodes] = useState<any[]>([]);
@@ -331,8 +332,6 @@ export default function ProvidersPage() {
     setOauthEnvRepairStatus(await loadOauthEnvRepairStatus());
   }, []);
 
-  // Inline-in-effect (calling the component-scope callback synchronously from
-  // an effect is rejected by the compiler rules); setState runs after the await.
   useEffect(() => {
     const run = async () => {
       const status = await loadOauthEnvRepairStatus();
@@ -463,8 +462,6 @@ export default function ProvidersPage() {
 
   // Toggle all connections for a provider on/off
   const handleToggleProvider = async (providerId: string, authType: string, newActive: boolean) => {
-    // Mirror getProviderStats: dual-auth providers (qoder, …) toggle BOTH their
-    // oauth and apikey/PAT connections from the single OAuth card.
     const matchesToggle = (c: { provider: string; authType?: string }) =>
       connectionMatchesProviderCard(c, providerId, authType as "oauth" | "free" | "apikey");
     const providerConns = connections.filter(matchesToggle);
@@ -558,7 +555,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const rawNoAuthEntriesAll = buildStaticProviderEntries("no-auth", getProviderStats);
@@ -576,7 +574,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const apiKeyProviderEntriesAll = buildStaticProviderEntries("apikey", getProviderStats);
@@ -595,7 +594,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
   const aggregatorProviderEntriesAll = apiKeyProviderEntriesAll.filter((entry) =>
     AGGREGATOR_PROVIDER_IDS.has(entry.providerId)
@@ -607,7 +607,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
   const imageProviderEntriesAll = apiKeyProviderEntriesAll.filter((entry) =>
     IMAGE_ONLY_PROVIDER_IDS.has(entry.providerId)
@@ -619,7 +620,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
   const enterpriseProviderEntriesAll = apiKeyProviderEntriesAll.filter((entry) =>
     ENTERPRISE_CLOUD_PROVIDER_IDS.has(entry.providerId)
@@ -631,7 +633,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
   const videoProviderEntriesAll = apiKeyProviderEntriesAll.filter((entry) =>
     VIDEO_PROVIDER_IDS.has(entry.providerId)
@@ -643,7 +646,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
   const embeddingRerankProviderEntriesAll = apiKeyProviderEntriesAll.filter((entry) =>
     EMBEDDING_RERANK_PROVIDER_IDS.has(entry.providerId)
@@ -655,7 +659,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const webCookieProviderEntriesAll = buildStaticProviderEntries("web-cookie", getProviderStats);
@@ -666,7 +671,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const localProviderEntriesAll = buildStaticProviderEntries("local", getProviderStats);
@@ -677,7 +683,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const searchProviderEntriesAll = buildStaticProviderEntries("search", getProviderStats);
@@ -688,7 +695,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const audioProviderEntriesAll = buildStaticProviderEntries("audio", getProviderStats);
@@ -699,7 +707,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const cloudAgentProviderEntriesAll = buildStaticProviderEntries("cloud-agent", getProviderStats);
@@ -710,7 +719,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const upstreamProxyEntriesAll = buildStaticProviderEntries("upstream-proxy", getProviderStats);
@@ -721,7 +731,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const compatibleProviderEntriesAll = [
@@ -754,7 +765,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const staticProviderEntriesAll = dedupeProviderEntries([
@@ -780,7 +792,8 @@ export default function ProvidersPage() {
     undefined,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   // IDE providers: subset of oauth/apikey providers that are editors/IDEs with
@@ -796,7 +809,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const oauthOnlyEntriesAll = oauthProviderEntriesAll
@@ -817,7 +831,8 @@ export default function ProvidersPage() {
     showFreeOnly,
     modelSearchQuery,
     activeServiceKind,
-    liveModelsByProviderId
+    liveModelsByProviderId,
+    connections
   );
 
   const compactProviderEntries = buildCompactProviderEntriesForPage({
@@ -874,6 +889,9 @@ export default function ProvidersPage() {
   return (
     <OpenRouterProviderStatsProvider entries={openRouterProviderStats}>
       <div className="flex flex-col gap-6">
+          <DeprecatedProviderBanner />
+
+
         {showFirstProviderHint && (
           <Card padding="lg">
             <div className="flex flex-col items-center justify-center text-center">
@@ -1892,6 +1910,14 @@ export default function ProvidersPage() {
         )}
       </div>
     </OpenRouterProviderStatsProvider>
+  );
+}
+
+export default function ProvidersPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProvidersPageContent />
+    </Suspense>
   );
 }
 

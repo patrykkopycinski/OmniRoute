@@ -21,6 +21,7 @@ export type IntelligentRoutingWeights = {
   resetWindowAffinity: number;
   connectionDensity: number;
   quality: number;
+  reliability: number;
 };
 
 export type IntelligentRoutingConfig = {
@@ -64,6 +65,7 @@ export const DEFAULT_INTELLIGENT_WEIGHTS: IntelligentRoutingWeights = {
   resetWindowAffinity: 0,
   connectionDensity: 0.0476,
   quality: 0.03,
+  reliability: 0,
 };
 
 export const MODE_PACK_OPTIONS = [
@@ -104,6 +106,7 @@ export const FACTOR_LABELS: Record<keyof IntelligentRoutingWeights, string> = {
   resetWindowAffinity: "Reset Window",
   connectionDensity: "Connection Spread",
   quality: "Observed Quality",
+  reliability: "Observed Reliability",
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -189,6 +192,8 @@ export function normalizeIntelligentRoutingConfig(config: unknown): IntelligentR
         toFiniteNumber(rawWeights.connectionDensity) ??
         DEFAULT_INTELLIGENT_WEIGHTS.connectionDensity,
       quality: toFiniteNumber(rawWeights.quality) ?? DEFAULT_INTELLIGENT_WEIGHTS.quality,
+      reliability:
+        toFiniteNumber(rawWeights.reliability) ?? DEFAULT_INTELLIGENT_WEIGHTS.reliability,
     },
     routerStrategy:
       typeof configRecord.routerStrategy === "string" &&
@@ -222,4 +227,26 @@ export function buildIntelligentProviderScores(combo: {
     score: baseScore,
     factors: weights,
   }));
+}
+
+/** Manual factor edits select custom scoring; unrelated edits preserve the preset. */
+export function applyIntelligentRoutingConfigPatch(
+  config: Record<string, unknown>,
+  patch: Record<string, unknown>
+): Record<string, unknown> & IntelligentRoutingConfig {
+  const normalized = normalizeIntelligentRoutingConfig(config);
+  const weightPatch = isRecord(patch.weights) ? patch.weights : null;
+  return {
+    ...config,
+    ...normalized,
+    ...patch,
+    modePack:
+      weightPatch !== null
+        ? "custom"
+        : ((patch.modePack as string | undefined) ?? normalized.modePack),
+    weights: {
+      ...normalized.weights,
+      ...(weightPatch ?? {}),
+    },
+  };
 }

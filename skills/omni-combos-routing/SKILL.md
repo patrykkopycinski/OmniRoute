@@ -228,7 +228,7 @@ curl -X POST $OMNIROUTE_URL/api/combos \
 | `reset-window` | Order targets by their configured reset window |
 | `headroom` | Prefer targets with more remaining quota headroom |
 | `strict-random` | Random without repeating until all targets have been used |
-| `auto` | Auto-Combo scoring across 15 factors |
+| `auto` | Auto-Combo scoring across 16 factors |
 | `lkgp` | Last-known-good-provider sticky routing |
 | `context-optimized` | Pick the best model for the request's context size |
 | `cache-optimized` | Prefer targets with stronger cache affinity |
@@ -237,7 +237,7 @@ curl -X POST $OMNIROUTE_URL/api/combos \
 
 ## Auto-combo (recommended for production)
 
-Auto-combo scores each candidate on 15 factors every request:
+Auto-combo scores each candidate on 16 factors every request:
 
 ```bash
 curl -X POST $OMNIROUTE_URL/api/combos \

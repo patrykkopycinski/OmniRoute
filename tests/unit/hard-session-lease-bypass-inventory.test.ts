@@ -13,14 +13,33 @@ type BypassClass = "A" | "B" | "C";
 
 const EXPECTED: Record<InventoryKind, Record<string, number>> = {
   credential: {
-    "open-sse/handlers/chatCore.ts": 2,
+    // v3.8.51 #12867 (d6f315018): the two credential-resolution sites that used to
+    // live in chatCore.ts (codex 429 and antigravity 422 account rotation) were
+    // extracted into the provider execution pipeline. chatCore.ts now only hands
+    // `getProviderCredentials` across the seam as a dependency (a reference, not a
+    // call), so the two sites are inventoried at their new home — see the
+    // property-access branch in countCalls().
+    // #14213 (8bf6b60a) re-added one direct call: the opt-in FLUSH_EMPTY_RETRY path picks
+    // the next credential for a bounded empty-turn retry. The retry dispatches through
+    // executeProviderRequest(), whose assertManagedLeaseFence(attemptConnectionId) rejects a
+    // connection other than the leased one — so it is fenced centrally (class A).
+    // #14914 moved that loop (and its credential rollback) into
+    // chatCore/emptyTurnRetryLoop.ts; chatCore.ts now passes `getProviderCredentials` in
+    // as a dependency (a reference, not a call), so the site is inventoried at its new
+    // home — still dispatched through executeProviderRequest(), still class A.
+    "open-sse/handlers/chatCore/emptyTurnRetryLoop.ts": 1,
+    "open-sse/handlers/chatCore/providerExecutionPipeline.ts": 2,
     "open-sse/services/imageCombo.ts": 1,
     "open-sse/services/speechCombo.ts": 1,
     "open-sse/services/videoCombo.ts": 2,
     "src/app/api/compression/compare/verify/route.ts": 1,
     "src/app/api/internal/codex-responses-ws/route.ts": 1,
+    // PR #11390: rerank listing endpoint probes configured credentials so the
+    // dashboard rerank selector only offers providers that can actually serve.
+    "src/app/api/memory/rerank-providers/route.ts": 1,
     "src/app/api/search/providers/route.ts": 3,
     "src/app/api/v1/_shared/elevenLabsProxy.ts": 1,
+    "src/app/api/v1/_shared/fishAudioProxy.ts": 1,
     "src/app/api/v1/audio/speech/route.ts": 1,
     "src/app/api/v1/_shared/videoModelResolution.ts": 1,
     "src/app/api/v1/audio/transcriptions/route.ts": 2,
@@ -28,8 +47,9 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/app/api/v1/classify/route.ts": 1,
     // v3.8.51 #11754: the second resolveImageRouteModel() call (a duplicate
     // of the retirement-check one hoisted before enforceApiKeyPolicy) was
-    // removed as dead redundant code, 6->5.
-    "src/app/api/v1/images/edits/route.ts": 5,
+    // removed as dead redundant code, 6->5. #12653 added combo target
+    // resolution with the same shape as imageCombo, 5->6.
+    "src/app/api/v1/images/edits/route.ts": 6,
     "src/app/api/v1/images/generations/route.ts": 3,
     "src/app/api/v1/images/upscale/route.ts": 1,
     "src/app/api/v1/messages/count_tokens/route.ts": 1,
@@ -49,7 +69,10 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     // from resolveLocalSyncedEndpointRoute, and handles allRateLimited, so it is
     // fenced the same way as the two pre-existing sites.
     "src/lib/embeddings/service.ts": 3,
-    "src/lib/memory/embedding/index.ts": 1,
+    // PR #11390: second site is the generic derived-provider listing fallback —
+    // read-only key presence probe used to decide whether a configured chat
+    // provider may appear in the memory embedding-source dropdown.
+    "src/lib/memory/embedding/index.ts": 2,
     "src/lib/search/executeWebSearch.ts": 2,
     "src/lib/skills/webFetchExecution.ts": 1,
     "src/sse/handlers/chat.ts": 2,
@@ -60,10 +83,11 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "open-sse/handlers/chatCore.ts": 3,
     "open-sse/handlers/chatCore/cliproxyModelMapping.ts": 1,
     "open-sse/handlers/chatCore/cliproxyapiCredentials.ts": 1,
-    // v3.8.51 #11754: the retired common ChatGPT Web's synthetic
+    // v3.8.51 #11754: the legacy common ChatGPT Web's synthetic
     // image-edit-continuation ChatGptWebExecutor.execute() call (the sole
     // executor.execute() site in this file) was removed with the provider;
-    // no executor site remains here.
+    // no executor site remains here. The clean-room restoration delegates
+    // through its adapter and does not reintroduce this bypass call site.
     // Gemini Web's own image handler+file (open-sse/handlers/imageGeneration/providers/geminiWeb.ts)
     // was already retired by #11708 (its .execute() site removed then too).
     "open-sse/handlers/videoGeneration.ts": 1,
@@ -73,14 +97,27 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
   },
   connection: {
     "open-sse/handlers/autoComboCandidates.ts": 1,
-    "open-sse/handlers/chatCore.ts": 2,
+    "open-sse/handlers/chatCore.ts": 3,
     "open-sse/handlers/cursorCliProxy.ts": 1,
     "open-sse/services/alibabaFreeTier.ts": 1,
     "open-sse/services/alibabaFreeTierQuotaFetcher.ts": 1,
+    // Family cooldown persist looks the row up to write PSD, not dispatch.
+    "open-sse/services/antigravityFamilyCooldown.ts": 1,
+    // #12864: on the first REQUEST_REJECTED refusal seen by this process the
+    // streak seeder reads the row's lastErrorType/lastErrorAt so a crash loop
+    // cannot reset the backoff count on every boot — a state read, not dispatch.
+    "open-sse/handlers/chatCore/requestRejectedFailure.ts": 1,
+    // #14958: after a successful search the proxy re-reads the connection row it
+    // just used so clearAccountError() can wipe a stale lastError/testStatus — a
+    // post-dispatch state read, not connection selection, so it stays class C.
+    "open-sse/handlers/search/searchProxy.ts": 1,
     // v3.8.50 back-merge additions (f95b03d7): combo routing infra and the
     // volcengine-plan binding/auto-sync services query connections the same
     // way as their classified siblings.
-    "open-sse/services/combo.ts": 1,
+    // v3.8.51 #12746 (6b587d004) split executeTarget out of combo.ts; the
+    // persisted-cooldown gate's connection read moved here byte-identically
+    // (readConnectionForCooldownGate), so this is the same site, renamed.
+    "open-sse/services/combo/executeTargetGates.ts": 1,
     "open-sse/services/combo/providerWildcard.ts": 1,
     "open-sse/services/tokenRefresh.ts": 1,
     "src/lib/providers/volcPlanAutoSyncBackfill.ts": 1,
@@ -89,6 +126,11 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/app/api/cloud/auth/route.ts": 1,
     "src/app/api/cloud/credentials/update/route.ts": 1,
     "src/app/api/models/route.ts": 1,
+    // #13487 (61198da9e): Test-all reads the provider's rows once only to reject
+    // with 409 when every connection is disabled — a state read behind the
+    // management route; the per-model probes it dispatches still go through the
+    // fenced chat pipeline, so it never selects a connection itself (class C).
+    "src/app/api/models/test-all/route.ts": 1,
     "src/app/api/monitoring/health/route.ts": 1,
     "src/app/api/oauth/[provider]/[action]/route.ts": 4,
     "src/app/api/oauth/codex/import/route.ts": 1,
@@ -107,10 +149,14 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     // Base drift (already present before #11754 boarded, from earlier-merged
     // #11698/#11720 retirement PRs): a third getProviderConnections-family
     // call site landed here without a golden-inventory update at the time.
-    "src/app/api/providers/route.ts": 3,
+    // +1: bulk PATCH reads the row to carry the operator-disable marker in
+    // providerSpecificData next to isActive — a state read, not dispatch.
+    "src/app/api/providers/route.ts": 4,
     "src/app/api/providers/test-batch/route.ts": 2,
     "src/app/api/rate-limits/route.ts": 1,
     "src/app/api/services/dario/admin/import-from-omniroute/route.ts": 2,
+    // 7a921299 (configurable semantic-cache embeddings): the provider picker reads the connection rows once.
+    "src/app/api/settings/cache-config/embeddingOptions.ts": 1,
     "src/app/api/settings/export-json/route.ts": 1,
     "src/app/api/settings/qdrant/embedding-models/route.ts": 1,
     "src/app/api/settings/route.ts": 1,
@@ -118,6 +164,12 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/app/api/translator/send/route.ts": 1,
     "src/app/api/translator/translate/route.ts": 1,
     "src/app/api/usage/call-logs/route.ts": 1,
+    // v3.8.51 #12805 (c042a5188): the reset-credit endpoint now serves codex and
+    // grok-cli, so it reads the connection once only to decide which handler runs
+    // (resolveResetCreditProvider). Read-only lookup behind requireManagementAuth;
+    // the handlers it delegates to carry the auxiliary-lease fence themselves. It
+    // never selects a connection to serve a request, so it stays class C.
+    "src/app/api/usage/codex-reset-credit/route.ts": 1,
     "src/app/api/usage/quota/route.ts": 1,
     "src/app/api/usage/utilization/route.ts": 1,
     "src/app/api/v1/vscode/[token]/api/tags/route.ts": 1,
@@ -137,7 +189,7 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/lib/db/providers.ts": 3,
     "src/lib/db/readCache.ts": 2,
     "src/lib/freeProviderRankings.ts": 1,
-    "src/lib/guardrails/visionBridgeCredentials.ts": 1,
+    "src/lib/guardrails/visionBridgeCredentials.ts": 2,
     "src/lib/kimi/tokenRefresh.ts": 1,
     "src/lib/monitoring/providerHealthAutopilot.ts": 1,
     "src/lib/monitoring/providerHealthMatrix.ts": 1,
@@ -160,11 +212,18 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/lib/quota/connectionRecovery.ts": 2,
     "src/lib/sync/bundle.ts": 1,
     // #11495: verify-only sweep queries oauth + cookie connections
-    "src/lib/tokenHealthCheck.ts": 2,
+    // #13874: the health check re-reads the row inside the refresh lane to see whether
+    // a Layer 2 refresh already rotated the token before it POSTs a consumed one (2 -> 3).
+    "src/lib/tokenHealthCheck.ts": 3,
     "src/lib/tokenHealthCheckCopilot.ts": 1,
     "src/lib/usage/callLogs.ts": 1,
     "src/lib/usage/codexResetCredits.ts": 1,
     "src/lib/usage/comboScoringInspector.ts": 1,
+    "src/lib/usage/glmResetCards.ts": 1,
+    // v3.8.51 #12805 (c042a5188): grok-cli sibling of codexResetCredits.ts, same
+    // shape — isConnectionUnavailableToAuxiliaryActivity() gates the lookup, so an
+    // ACTIVE exclusive lease defers redemption (409 exclusive_lease_active).
+    "src/lib/usage/grokResetCredits.ts": 1,
     "src/lib/usage/providerLimits.ts": 4,
     "src/lib/usage/resilienceExplain.ts": 1,
     "src/lib/usage/usageStats.ts": 1,
@@ -181,6 +240,7 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
   credential: Object.fromEntries(
     Object.keys(EXPECTED.credential).map((file) => [
       file,
+      file === "open-sse/handlers/chatCore/emptyTurnRetryLoop.ts" ||
       file === "src/app/api/v1/session-leases/route.ts" ||
       file === "src/sse/handlers/chat.ts" ||
       file === "src/sse/services/auth.ts"
@@ -203,10 +263,9 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
       [
         "open-sse/handlers/autoComboCandidates.ts",
         "open-sse/handlers/chatCore.ts",
-        "open-sse/services/combo.ts",
         "open-sse/services/alibabaFreeTier.ts",
         "open-sse/services/alibabaFreeTierQuotaFetcher.ts",
-        "open-sse/services/combo.ts",
+        "open-sse/services/combo/executeTargetGates.ts",
         "open-sse/services/combo/providerWildcard.ts",
         "open-sse/services/tokenRefresh.ts",
         "src/app/api/translator/send/route.ts",
@@ -215,6 +274,8 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
         "src/lib/providers/volcenginePlanBinding.ts",
         "src/lib/services/quotaAutoPing.ts",
         "src/lib/usage/codexResetCredits.ts",
+        "src/lib/usage/glmResetCards.ts",
+        "src/lib/usage/grokResetCredits.ts",
         "src/lib/usage/providerLimits.ts",
         "src/lib/vncSession/service.ts",
         "src/lib/warmupScheduler.ts",
@@ -269,6 +330,18 @@ function countCalls(): Record<InventoryKind, Record<string, number>> {
           }
         } else if (
           ts.isPropertyAccessExpression(expression) &&
+          (expression.name.text === "getProviderCredentials" ||
+            expression.name.text === "getProviderCredentialsWithQuotaPreflight")
+        ) {
+          // Injected-dependency shape. #12867 moved codex/antigravity account
+          // rotation behind a seam: chatCore passes `getProviderCredentials` in and
+          // the provider execution pipeline calls it off its injected `connection`
+          // context. Counting bare identifier calls only would let an
+          // extract-to-a-seam refactor silently drop a credential-resolution site
+          // out of this inventory, which is exactly what this guard exists to catch.
+          increment("credential");
+        } else if (
+          ts.isPropertyAccessExpression(expression) &&
           expression.name.text === "execute" &&
           ts.isIdentifier(expression.expression) &&
           ["executor", "fallbackExecutor", "providerExecutor", "streamExecutor"].includes(
@@ -311,6 +384,8 @@ test("managed request surfaces are fenced centrally or rejected before independe
     "src/lib/api/modelTestRunner.ts",
     "src/lib/services/quotaAutoPing.ts",
     "src/lib/usage/codexResetCredits.ts",
+    "src/lib/usage/glmResetCards.ts",
+    "src/lib/usage/grokResetCredits.ts",
     "src/lib/vncSession/service.ts",
     "src/lib/warmupScheduler.ts",
     "src/shared/services/modelSyncScheduler.ts",
@@ -327,7 +402,28 @@ test("managed request surfaces are fenced centrally or rejected before independe
     core,
     /assertManagedLeaseFence\(getExecutionConnectionId\(getExecutionCredentials\(\)\)\)/
   );
-  assert.match(core, /provider === "codex" &&\s*!managedLease/);
+  // #12867 (d6f315018) extracted codex 429 / antigravity 422 account rotation out
+  // of chatCore.ts into the provider execution pipeline. The managed-lease fence was
+  // NOT dropped — it now crosses the seam as `policy.allowAccountRotation`. Pin both
+  // ends so neither half can be weakened alone: chatCore must keep deriving the
+  // policy from `!managedLease` on both legs, and the pipeline must keep gating the
+  // codex rotation branch on it. (The antigravity 422 branch, which had no lease
+  // fence at all before the extract, is now gated by the same flag.)
+  const pipeline = fs.readFileSync(
+    path.join(REPO_ROOT, "open-sse/handlers/chatCore/providerExecutionPipeline.ts"),
+    "utf8"
+  );
+  const rotationPolicySites = core.match(
+    /allowAccountRotation: !managedLease && comboStrategy !== "context-relay"/g
+  );
+  assert.equal(
+    rotationPolicySites?.length,
+    2,
+    "both the streaming and the non-streaming leg must derive account rotation from !managedLease"
+  );
+  assert.match(pipeline, /const canRotateAccount = policy\.allowAccountRotation && !isolateProbe;/);
+  assert.match(pipeline, /canRotateAccount &&\s*target\.provider === "codex"/);
+  assert.match(pipeline, /canRotateAccount &&\s*target\.provider === "antigravity"/);
   assert.match(ws, /LEASE_UNSUPPORTED_TRANSPORT/);
   assert.match(internalKeys, /!k\.scopes\?\.includes\(EXCLUSIVE_LEASE_SCOPE\)/);
   for (const source of auxiliaryIsolationSources) {

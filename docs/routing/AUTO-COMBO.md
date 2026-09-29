@@ -25,7 +25,7 @@ lastUpdated: 2026-06-28
 | `auto/offline` | offline | Favors providers with highest quota availability                         |
 | `auto/smart`   | smart   | Quality-first + higher exploration rate (10%) for better model discovery |
 | `auto/lkgp`    | lkgp    | Explicit LKGP (same as default `auto`)                                   |
-| `auto/chaos`   | chaos   | Fault-injection weights for resilience testing (chaos engineering)       |
+| `auto/chaos`   | chaos   | Parallel fan-out, one model per provider (not fault injection)           |
 
 ### Category × Tier Composition (`auto/<category>:<tier>`)
 
@@ -184,31 +184,32 @@ See [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) and [#7111](h
 
 ## How It Works (Persisted Auto-Combos)
 
-The Auto-Combo Engine dynamically selects the best provider/model for each request using a **15-factor scoring function** (defined in `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). The default weights sum to `1.0`; custom weights are renormalized by `normalizeScoringWeights()`. Two of the fifteen — `cacheAffinity` and `resetWindowAffinity` — carry a default weight of `0`: they are still computed for every candidate, and `cacheAffinity` gates prompt-cache deduplication outside the score, so they are declared factors that simply do not vote by default.
+The Auto-Combo Engine dynamically selects the best provider/model for each request using a **16-factor scoring function** (defined in `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). The default weights sum to `1.0`; custom weights are renormalized by `normalizeScoringWeights()`. Two of the sixteen — `cacheAffinity` and `resetWindowAffinity` — carry a default weight of `0`; `reliability` carries `0` in `DEFAULT_WEIGHTS` but `0.03` in generic packs and `0.04` in `reliability-first`, and `quality` carries `0.02` in packs (`0.03` in `quality-first`): they are still computed for every candidate, and `cacheAffinity` gates prompt-cache deduplication outside the score, so the zero-default factors simply do not vote by default while packs do.
 
-![Auto-Combo 15-factor scoring](../diagrams/exported/auto-combo-scoring.svg)
+![Auto-Combo 16-factor scoring](../diagrams/exported/auto-combo-scoring.svg)
 
-> Source: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (regenerate via `npm run docs:render-diagrams`). The filename is historical; the source and rendered diagram show all 15 factors declared in `DEFAULT_WEIGHTS`.
+> Source: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (regenerate via `npm run docs:render-diagrams`). The filename is historical; the source and rendered diagram show all 16 factors declared in `DEFAULT_WEIGHTS`.
 
-| Factor                | Default Weight | Description                                                                                                                                                                                 |
-| :-------------------- | :------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `quota`               | 0.1429         | Remaining quota / rate-limit headroom [0..1]                                                                                                                                                |
-| `health`              | 0.1605         | Health score from circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                     |
-| `costInv`             | 0.1429         | Inverse **blended** cost (60% input + 40% output token price, normalized) — cheaper = higher score                                                                                          |
-| `latencyInv`          | 0.1143         | Inverse p95 latency normalized to pool — faster = higher score                                                                                                                              |
-| `taskFit`             | 0.0762         | Task-type fitness (coding, review, planning, analysis, debugging, docs)                                                                                                                     |
-| `stability`           | 0.0476         | Variance-based stability (low latency stdDev / error rate)                                                                                                                                  |
-| `tierPriority`        | 0.0476         | Account-tier priority — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                        |
-| `tierAffinity`        | 0.0476         | Affinity between the candidate's tier and the manifest-recommended tier                                                                                                                     |
-| `specificityMatch`    | 0.0476         | Match between request specificity (manifest hint) and model tier                                                                                                                            |
-| `contextAffinity`     | 0.0476         | Affinity between the request's context-window need and the model's context window                                                                                                           |
-| `sessionAvailability` | 0.0476         | OAuth session availability of the candidate connection for this session (`getOAuthSessionAvailability()`; non-OAuth connections score 1.0)                                                  |
-| `connectionDensity`   | 0.0476         | Spreads load across connections of the same provider (anti-concentration)                                                                                                                   |
-| `cacheAffinity`       | 0.00           | Rendezvous-hash affinity toward the connection likeliest to already hold this request's prompt-cache prefix (`open-sse/services/combo/promptCacheAffinity.ts`); disabled by default (#8008) |
-| `resetWindowAffinity` | 0.00           | Bias toward connections whose quota reset window is favorable (disabled by default)                                                                                                         |
-| `quality`             | 0.03           | Feedback-driven output-quality signal from the routing-event quality tracker; candidates without observations receive a neutral 0.5                                                         |
+| Factor                | Default Weight | Description                                                                                                                                                                                    |
+| :-------------------- | :------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quota`               | 0.1429         | Remaining quota / rate-limit headroom [0..1]                                                                                                                                                   |
+| `health`              | 0.1605         | Health score from circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                        |
+| `costInv`             | 0.1429         | Inverse **blended** cost (60% input + 40% output token price, normalized) — cheaper = higher score                                                                                             |
+| `latencyInv`          | 0.1143         | Inverse p95 latency normalized to pool — faster = higher score                                                                                                                                 |
+| `taskFit`             | 0.0762         | Task-type fitness (coding, review, planning, analysis, debugging, docs)                                                                                                                        |
+| `stability`           | 0.0476         | Variance-based stability from latency standard deviation — a candidate whose response time swings scores lower                                                                                 |
+| `tierPriority`        | 0.0476         | Account-tier priority — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                           |
+| `tierAffinity`        | 0.0476         | Affinity between the candidate's tier and the manifest-recommended tier                                                                                                                        |
+| `specificityMatch`    | 0.0476         | Match between request specificity (manifest hint) and model tier                                                                                                                               |
+| `contextAffinity`     | 0.0476         | Affinity between the request's context-window need and the model's context window                                                                                                              |
+| `sessionAvailability` | 0.0476         | OAuth session availability of the candidate connection for this session (`getOAuthSessionAvailability()`; non-OAuth connections score 1.0)                                                     |
+| `connectionDensity`   | 0.0476         | Spreads load across connections of the same provider (anti-concentration)                                                                                                                      |
+| `cacheAffinity`       | 0.00           | Rendezvous-hash affinity toward the connection likeliest to already hold this request's prompt-cache prefix (`open-sse/services/combo/promptCacheAffinity.ts`); disabled by default (#8008)    |
+| `resetWindowAffinity` | 0.00           | Bias toward connections whose quota reset window is favorable (disabled by default)                                                                                                            |
+| `quality`             | 0.03           | Feedback-driven output-quality signal from the routing-event quality tracker; candidates without observations receive a neutral 0.5                                                            |
+| `reliability`         | 0.00           | Observed success share, `1 - failureRate`, from 24h of usage history behind a ten-sample floor (real-time metrics otherwise); candidates with no observations read as 1.0. Disabled by default |
 
-**Sum:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 = 1.0` as declared in `DEFAULT_WEIGHTS`; user-configured weights are renormalized into a distribution by `normalizeScoringWeights()` before scoring.
+**Sum:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0` as declared in `DEFAULT_WEIGHTS`; user-configured weights are renormalized into a distribution by `normalizeScoringWeights()` before scoring.
 
 ## Mode Packs
 
@@ -216,31 +217,33 @@ The Auto-Combo Engine dynamically selects the best provider/model for each reque
 
 | Factor                | ship-fast  | cost-saver | quality-first | offline-friendly | reliability-first | chaos-mode |
 | :-------------------- | :--------- | :--------- | :------------ | :--------------- | :---------------- | :--------- |
-| `quota`               | 0.1333     | 0.1333     | 0.0952        | **0.3524**       | 0.1333            | 0.0476     |
+| `quota`               | 0.1133     | 0.1133     | 0.0752        | **0.3324**       | 0.1133            | 0.0376     |
 | `health`              | 0.2667     | 0.1810     | 0.1714        | 0.2667           | **0.3524**        | **0.4000** |
-| `costInv`             | 0.0476     | **0.3524** | 0.0476        | 0.0952           | 0.0381            | 0.0190     |
-| `latencyInv`          | **0.3048** | 0.0476     | 0.0476        | 0.0476           | 0.0476            | 0.0286     |
+| `costInv`             | 0.0276     | **0.3324** | 0.0276        | 0.0752           | 0.0181            | 0.0140     |
+| `latencyInv`          | **0.3048** | 0.0476     | 0.0476        | 0.0476           | 0.0476            | 0.0186     |
 | `taskFit`             | 0.0952     | 0.0952     | **0.3524**    | 0.0000           | 0.0952            | 0.1905     |
 | `stability`           | 0.0000     | 0.0476     | 0.1429        | 0.0952           | 0.1905            | 0.1714     |
-| `tierPriority`        | 0.0476     | 0.0476     | 0.0476        | 0.0476           | 0.0476            | 0.0190     |
+| `tierPriority`        | 0.0376     | 0.0376     | 0.0276        | 0.0376           | 0.0276            | 0.0040     |
 | `tierAffinity`        | 0.0000     | 0.0000     | 0.0000        | 0.0000           | 0.0000            | 0.0000     |
 | `specificityMatch`    | 0.0000     | 0.0000     | 0.0000        | 0.0000           | 0.0000            | 0.0000     |
-| `contextAffinity`     | 0.0095     | 0.0000     | 0.0000        | 0.0000           | 0.0000            | 0.0286     |
+| `contextAffinity`     | 0.0095     | 0.0000     | 0.0000        | 0.0000           | 0.0000            | 0.0186     |
 | `sessionAvailability` | 0.0476     | 0.0476     | 0.0476        | 0.0476           | 0.0476            | 0.0476     |
 | `resetWindowAffinity` | 0.0000     | 0.0000     | 0.0000        | 0.0000           | 0.0000            | 0.0000     |
 | `connectionDensity`   | 0.0476     | 0.0476     | 0.0476        | 0.0476           | 0.0476            | 0.0476     |
+| `quality`             | 0.02       | 0.02       | **0.03**      | 0.02             | 0.02              | 0.02       |
+| `reliability`         | 0.03       | 0.03       | 0.03          | 0.03             | **0.04**          | 0.03       |
 
 Notes:
 
-- **No pack sets `quality`, and a pack replaces the weight map wholesale** (`weights = pack`, not a merge). `quality` carries `0.03` in `DEFAULT_WEIGHTS`, but under any mode pack it normalizes to `0` — selecting a pack silences the observed-quality signal completely. If you want quality feedback to influence routing, leave `modePack` unset and tune the weights directly. (`cacheAffinity` is also unset by every pack, but it defaults to `0` anyway, so nothing changes there.)
+- **Packs carry `quality` and `reliability`** (`quality 0.02`, `quality-first 0.03`; `reliability 0.03`, `reliability-first 0.04`) and replace the weight map wholesale (`weights = pack`, not a merge). `DEFAULT_WEIGHTS` carries `quality 0.03 / reliability 0`; selecting `balanced`/`default` keeps those defaults, selecting a pack uses the pack's values above. On a cold pool (no observations yet, so `quality 0.5` and `reliability 1`) these two factors add `+0.04` under a generic pack (`0.03 + 0.01`), `+0.045` under `quality-first` and `+0.05` under `reliability-first`.
 - `tierAffinity`, `specificityMatch` and `resetWindowAffinity` are explicitly `0` in every pack.
 - Each pack's emphasis at a glance:
   - **ship-fast** → latencyInv 0.3048 + health 0.2667 (low-latency, healthy connections)
-  - **cost-saver** → costInv 0.3524 (cheapest tokens win)
-  - **quality-first** → taskFit 0.3524 + stability 0.1429 (best model for the task, consistent)
-  - **offline-friendly** → quota 0.3524 + health 0.2667 (max headroom regardless of speed/cost)
-  - **reliability-first** → health 0.3524 + stability 0.1905 (fewest surprises)
-  - **chaos-mode** → health 0.4000 + taskFit 0.1905 (fault-injection profile)
+  - **cost-saver** → costInv 0.3324 (cheapest tokens win)
+  - **quality-first** → taskFit 0.3524 + stability 0.1429 + quality 0.03, the highest of any pack (best model for the task, consistent)
+  - **offline-friendly** → quota 0.3324 + health 0.2667 (max headroom regardless of speed/cost)
+  - **reliability-first** → health 0.3524 + stability 0.1905 + reliability 0.04, the highest of any pack (fewest surprises)
+  - **chaos-mode** → health 0.4000 + taskFit 0.1905 (the weight pack `auto/chaos` assigns to its panel members; the parallel fan-out does not read these weights, and this is not a fault-injection profile, see [CHAOS-MODE.md](../guides/CHAOS-MODE.md#autochaos-parallel-fan-out))
 
 ### Per-Request Controls (headers) — #6023 / #6024 / #6025 / #3470
 
@@ -249,11 +252,12 @@ combo's stored config. These apply only to the `auto` strategy and only for the 
 that carries them; the combo's saved `modePack`/`budgetCap`/`budgetFallback` are used
 when the header is absent.
 
-| Header                        | Accepts                                                                                                                                                                                 | Effect                                                                                                                                                                                                                                               |
-| :---------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `X-OmniRoute-Mode`            | a preset alias (`fast`, `balanced`, `quality`, `cheap`, `reliable`, `offline`) or a raw pack name (`ship-fast`, `cost-saver`, `quality-first`, `offline-friendly`, `reliability-first`) | Overrides the scoring weights for this request. `balanced`/`default` force the default weights (no pack). Unknown values are ignored (config preserved).                                                                                             |
-| `X-OmniRoute-Budget`          | a positive number (max USD per request)                                                                                                                                                 | Hard cost ceiling: candidates whose estimated cost exceeds it are filtered before selection. What happens when **every** candidate exceeds it is controlled by `X-OmniRoute-Budget-Fallback` below.                                                  |
-| `X-OmniRoute-Budget-Fallback` | `cheapest` (default, aliases: `cheapest-viable`, `soft`) or `strict` (aliases: `block`, `hard`)                                                                                         | `cheapest`: falls back to the globally cheapest candidate even though it still exceeds the cap (legacy behavior). `strict`: refuses to select — the request fails fast with `HTTP 402` instead of silently overspending. Unknown values are ignored. |
+| Header                        | Accepts                                                                                                                                                                                 | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| :---------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `X-OmniRoute-Mode`            | a preset alias (`fast`, `balanced`, `quality`, `cheap`, `reliable`, `offline`) or a raw pack name (`ship-fast`, `cost-saver`, `quality-first`, `offline-friendly`, `reliability-first`) | Overrides the scoring weights for this request. `balanced`/`default` force the default weights (no pack). Unknown values are ignored (config preserved).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `X-OmniRoute-Budget`          | a positive number (max USD per request)                                                                                                                                                 | Hard cost ceiling: candidates whose estimated cost exceeds it are filtered before selection. What happens when **every** candidate exceeds it is controlled by `X-OmniRoute-Budget-Fallback` below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `X-OmniRoute-Budget-Fallback` | `cheapest` (default, aliases: `cheapest-viable`, `soft`) or `strict` (aliases: `block`, `hard`)                                                                                         | `cheapest`: falls back to the globally cheapest candidate even though it still exceeds the cap (legacy behavior). `strict`: refuses to select — the request fails fast with `HTTP 402` instead of silently overspending. Unknown values are ignored.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `X-OmniRoute-Effort`          | `auto` (other values reserved)                                                                                                                                                          | Adaptive thinking budget: when the request carries **no** reasoning field of any shape (`reasoning_effort`, `reasoning`, `thinking`), the gateway resolves `auto` to `low`/`medium`/`high` from deterministic request-shape signals (last-user-message length, context size up to the last user message, prior tool results, tool-loop depth). Signals are scoped to the current turn — everything after the last user message is ignored — so every request in a tool loop resolves to the same level (stateless per-turn pin, no session state, no mid-loop escalation that would break upstream prompt-cache prefixes). An explicit client reasoning field always wins. Scoped to requests whose upstream dispatch resolves to the OpenAI Chat Completions shape (`targetFormat === FORMATS.OPENAI`) — `reasoning_effort` is an OpenAI-shaped field, so the header is a no-op on a Claude- or Gemini-targeted request (see `open-sse/handlers/chatCore/adaptiveEffortWiring.ts`). |
 
 ```bash
 # Force the fastest profile, cap this request at $0.05, and hard-block instead of overspending
@@ -278,7 +282,7 @@ OmniRoute's combo engine supports **19 routing strategies** (declared in `src/sh
 | :------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `priority`          | First-target ordered list with explicit priority                                                                                                                                          |
 | `weighted`          | Weighted random by per-target weight                                                                                                                                                      |
-| `round-robin`       | Cycle through targets in order                                                                                                                                                            |
+| `round-robin`       | Cycle through targets in order (batched; see below)                                                                                                                                       |
 | `context-relay`     | Hand off context across targets (long conversations)                                                                                                                                      |
 | `fill-first`        | Fill each target's quota before moving to next                                                                                                                                            |
 | `p2c`               | Power-of-2-choices random load balancing                                                                                                                                                  |
@@ -289,7 +293,7 @@ OmniRoute's combo engine supports **19 routing strategies** (declared in `src/sh
 | `reset-window`      | Prefer targets whose quota window resets soonest                                                                                                                                          |
 | `headroom`          | Pick the target with the most remaining quota headroom                                                                                                                                    |
 | `strict-random`     | Random without deduplication of repeats                                                                                                                                                   |
-| `auto`              | Use Auto Combo scoring (15-factor) — **recommended**                                                                                                                                      |
+| `auto`              | Use Auto Combo scoring (16-factor) — **recommended**                                                                                                                                      |
 | `lkgp`              | Last-Known-Good Path (pins to the last successful provider, then falls back to rules)                                                                                                     |
 | `context-optimized` | Pick target with best fit for current context size                                                                                                                                        |
 | `cache-optimized`   | Reorder targets by prompt-cache affinity — the connection likeliest to already hold this request's cached prefix is tried first (`open-sse/services/combo/promptCacheAffinity.ts`, #8008) |
@@ -317,6 +321,55 @@ OmniRoute's combo engine supports **19 routing strategies** (declared in `src/sh
 
 For strict rotation use `round-robin`; equal weights on `weighted` give statistical — not
 strict — balance.
+
+### Agentic pipeline mode
+
+A two-step `pipeline` combo can opt into planner/executor routing with
+`config.agenticOrchestration.enabled`. The first target owns planning and final answers;
+the second target emits client-native tool calls. OmniRoute detects tool-result
+continuations from the request protocol, asks the planner whether another tool round is
+needed, and dynamically makes either the executor or planner the client-facing final
+step.
+
+```json
+{
+  "strategy": "pipeline",
+  "models": [{ "model": "provider/planner" }, { "model": "provider/executor" }],
+  "config": {
+    "agenticOrchestration": { "enabled": true, "maxToolRounds": 8 }
+  }
+}
+```
+
+The executor may emit multiple independent calls in one response. Dependent calls are
+handled in later client tool-result turns, with the planner reviewing every result.
+`maxToolRounds` defaults to `8` and accepts `1`–`32`; once reached, the planner must
+produce the best available final answer. Internal planner decisions are buffered, while
+the selected client-facing response preserves the original streaming preference.
+
+### `round-robin` sticky batch and account expansion
+
+Round-robin is batched, not one-request-per-step:
+
+- `stickyRoundRobinLimit` (combo config, then `comboStickyRoundRobinLimit`, then
+  `settings.stickyRoundRobinLimit`, default **3**) keeps the same target for that many
+  consecutive successes before rotating. Set the combo override to `1` for one-request
+  rotation. The combo editor shows the effective value and which layer it came from.
+- `connectionAwareExpansion` (combo config, then settings, default **false**) expands
+  each provider-level step into per-account targets before rotation. Group-B strategies
+  (priority, weighted, round-robin, random, p2c, least-used, cost-optimized, lkgp,
+  fill-first, strict-random, context-optimized, cache-optimized, context-relay, fusion,
+  pipeline) keep a provider-level view until this is on. The combo editor exposes
+  inherit / on / off; inherit uses the global default (off).
+- Prompt-cache locality routing (`promptCacheAffinityEnabled`, default **true**) reorders
+  pinned connections so matching cache keys stay on one account. It takes precedence over
+  round-robin and weighted rotation across pinned per-account steps. Turn it off under
+  Settings → Combo defaults if you need strict rotation. There is no per-combo override.
+
+For multi-account rotation on one model, prefer **one dynamic-account step** (empty
+`connectionId`, whole pool) with sticky limit `1`, not three pinned `connectionId`s.
+Pinned steps plus affinity collapse onto the same account even while the RR counter
+advances.
 
 ## Fusion Strategy
 
@@ -398,7 +451,7 @@ The Auto Combo engine doesn't require pre-defined combos. Instead, `open-sse/ser
 3. Cross-references with `getProviderRegistry()` for model availability + pricing
 4. For each tuple `(provider, model, connection)`, builds a `VirtualAutoComboCandidate`
 5. Picks `connection.defaultModel` (or the registry's first model) as the dispatch target
-6. Scores each candidate using the 15-factor `scorePool()` and the variant's weight pack
+6. Scores each candidate using the 16-factor `scorePool()` and the variant's weight pack
 7. Returns the resulting in-memory `AutoComboConfig` for `handleComboChat()` — never persisted to DB
 
 This means **adding a new provider with `auto/*` enabled automatically expands the candidate pool** — no manual combo editing needed. The virtual combo is rebuilt per request, so newly-added or newly-healthy connections are picked up immediately.
@@ -459,7 +512,7 @@ Each strategy picks one provider from the candidate pool, given a `RoutingContex
 (task type, tool/vision hints, token estimate, optional SLA policy, optional
 last-known-good provider).
 
-#### 1. `rules` (default) — 15-factor weighted scoring
+#### 1. `rules` (default) — 16-factor weighted scoring
 
 Wraps the existing scoring engine. Filters out `OPEN` circuit-breaker
 candidates, then runs `scorePool()` with the current task type and `getTaskFitness()`,
@@ -468,7 +521,7 @@ picking the top-scoring provider.
 ```ts
 class RulesStrategyImpl implements RouterStrategy {
   readonly name = "rules";
-  readonly description = "15-factor weighted scoring (see DEFAULT_WEIGHTS)";
+  readonly description = "16-factor weighted scoring (see DEFAULT_WEIGHTS)";
 
   select(pool, context) {
     const eligible = pool.filter((c) => c.circuitBreakerState !== "OPEN");
@@ -709,7 +762,7 @@ Including the bare `auto` (default) plus the 6 `AutoVariant` values declared in 
 
 ## How tiers fit Auto-Combo
 
-The 15-factor scoring function (`open-sse/services/autoCombo/scoring.ts`) treats tier
+The 16-factor scoring function (`open-sse/services/autoCombo/scoring.ts`) treats tier
 membership as two signals: `tierPriority` (0.0476) and `tierAffinity` (0.0476). See the
 canonical [scoring factor table](#how-it-works-persisted-auto-combos) above for the full
 `DEFAULT_WEIGHTS` set — the per-pack overrides (ship-fast/cost-saver/quality-first/
@@ -728,7 +781,7 @@ To strongly favor Tier 1 (subscription), increase `tierPriority` weight:
 }
 ```
 
-See `docs/marketing/TIERS.md` for tier definitions and provider classification.
+See [`docs/guides/TIERS.md`](../guides/TIERS.md) for tier definitions and provider classification.
 
 ## Testing & Coverage
 
@@ -764,7 +817,7 @@ intentionally excluded from CI because they require live credentials and VPS acc
 
 | File                                                      | Purpose                                                                                                   |
 | :-------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------- |
-| `open-sse/services/autoCombo/scoring.ts`                  | 15-factor scoring function, `DEFAULT_WEIGHTS`, pool norm                                                  |
+| `open-sse/services/autoCombo/scoring.ts`                  | 16-factor scoring function, `DEFAULT_WEIGHTS`, pool norm                                                  |
 | `open-sse/services/autoCombo/taskFitness.ts`              | Model × task fitness lookup                                                                               |
 | `open-sse/services/autoCombo/engine.ts`                   | Selection logic, bandit, budget cap                                                                       |
 | `open-sse/services/autoCombo/selfHealing.ts`              | Exclusion, probes, incident mode                                                                          |

@@ -28,11 +28,11 @@
       "apiKey": {
         "Accept": "text/event-stream",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, sdk-cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Lang": "js",
         "X-Stainless-OS": "MacOS",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -47,11 +47,11 @@
       "nonStream": {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, sdk-cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Lang": "js",
         "X-Stainless-OS": "MacOS",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -66,11 +66,11 @@
       "oauth": {
         "Accept": "text/event-stream",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, sdk-cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Lang": "js",
         "X-Stainless-OS": "MacOS",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -109,6 +109,29 @@
     "url": {
       "nonStream": "https://apihub.agnes-ai.com/v1/chat/completions",
       "stream": "https://apihub.agnes-ai.com/v1/chat/completions"
+    }
+  },
+  "agnes-cn": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.agnes-ai.cn/v1/chat/completions",
+      "stream": "https://api.agnes-ai.cn/v1/chat/completions"
     }
   },
   "agy": {
@@ -326,20 +349,20 @@
     "headers": {
       "apiKey": {
         "Accept": "text/event-stream",
-        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
         "x-api-key": "<CRED>"
       },
       "nonStream": {
-        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
         "x-api-key": "<CRED>"
       },
       "oauth": {
         "Accept": "text/event-stream",
-        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
         "x-api-key": "<CRED>"
@@ -426,6 +449,29 @@
     "url": {
       "nonStream": "https://api.airforce/v1/chat/completions",
       "stream": "https://api.airforce/v1/chat/completions"
+    }
+  },
+  "arcee-ai": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.arcee.ai/api/v1/chat/completions",
+      "stream": "https://api.arcee.ai/api/v1/chat/completions"
     }
   },
   "auggie": {
@@ -842,6 +888,29 @@
       "stream": "https://api.chatanywhere.org/v1/chat/completions"
     }
   },
+  "chatgpt-web": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://chatgpt.com",
+      "stream": "https://chatgpt.com"
+    }
+  },
   "chatgpt-web-codex": {
     "format": "openai-responses",
     "headers": {
@@ -911,29 +980,6 @@
       "stream": "https://chenzk.top/v1/chat/completions"
     }
   },
-  "chipotle": {
-    "format": "openai",
-    "headers": {
-      "apiKey": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "nonStream": {
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "oauth": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      }
-    },
-    "url": {
-      "nonStream": "https://amelia.chipotle.com",
-      "stream": "https://amelia.chipotle.com"
-    }
-  },
   "chutes": {
     "format": "openai",
     "headers": {
@@ -962,17 +1008,17 @@
     "headers": {
       "apiKey": {
         "Accept": "text/event-stream",
-        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Dangerous-Direct-Browser-Access": "true",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, cli)",
         "X-App": "cli",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Helper-Method": "stream",
         "X-Stainless-Lang": "js",
         "X-Stainless-Os": "<OS>",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -980,17 +1026,17 @@
         "x-api-key": "<CRED>"
       },
       "nonStream": {
-        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Dangerous-Direct-Browser-Access": "true",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, cli)",
         "X-App": "cli",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Helper-Method": "stream",
         "X-Stainless-Lang": "js",
         "X-Stainless-Os": "<OS>",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -999,17 +1045,17 @@
       },
       "oauth": {
         "Accept": "text/event-stream",
-        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25,skills-2025-10-02",
+        "Anthropic-Beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,token-efficient-tools-2026-03-28,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07,code-execution-2025-08-25",
         "Anthropic-Dangerous-Direct-Browser-Access": "true",
         "Anthropic-Version": "2023-06-01",
         "Content-Type": "application/json",
-        "User-Agent": "claude-cli/2.1.220 (external, cli)",
+        "User-Agent": "claude-cli/2.1.280 (external, cli)",
         "X-App": "cli",
         "X-Stainless-Arch": "<ARCH>",
         "X-Stainless-Helper-Method": "stream",
         "X-Stainless-Lang": "js",
         "X-Stainless-Os": "<OS>",
-        "X-Stainless-Package-Version": "0.94.0",
+        "X-Stainless-Package-Version": "0.112.1",
         "X-Stainless-Retry-Count": "0",
         "X-Stainless-Runtime": "node",
         "X-Stainless-Runtime-Version": "v26.3.0",
@@ -1194,7 +1240,7 @@
     }
   },
   "clova-studio": {
-    "format": "openai",
+    "format": "clova",
     "headers": {
       "apiKey": {
         "Accept": "text/event-stream",
@@ -1212,8 +1258,8 @@
       }
     },
     "url": {
-      "nonStream": "https://clovastudio.stream.ntruss.com/v1/openai/chat/completions",
-      "stream": "https://clovastudio.stream.ntruss.com/v1/openai/chat/completions"
+      "nonStream": "https://clovastudio.stream.ntruss.com/v3/chat-completions",
+      "stream": "https://clovastudio.stream.ntruss.com/v3/chat-completions"
     }
   },
   "codebuddy-cn": {
@@ -1287,27 +1333,24 @@
         "Accept": "text/event-stream",
         "Authorization": "Bearer <TOK>",
         "Content-Type": "application/json",
-        "Openai-Beta": "responses=experimental",
-        "User-Agent": "codex-cli/0.149.0 (<OS>; <ARCH>)",
-        "Version": "0.149.0",
-        "X-Codex-Beta-Features": "responses_websockets"
+        "Openai-Beta": "responses_websockets=2026-02-06",
+        "User-Agent": "codex-cli/0.156.1 (<OS>; <ARCH>)",
+        "Version": "0.156.1"
       },
       "nonStream": {
         "Authorization": "Bearer <TOK>",
         "Content-Type": "application/json",
-        "Openai-Beta": "responses=experimental",
-        "User-Agent": "codex-cli/0.149.0 (<OS>; <ARCH>)",
-        "Version": "0.149.0",
-        "X-Codex-Beta-Features": "responses_websockets"
+        "Openai-Beta": "responses_websockets=2026-02-06",
+        "User-Agent": "codex-cli/0.156.1 (<OS>; <ARCH>)",
+        "Version": "0.156.1"
       },
       "oauth": {
         "Accept": "text/event-stream",
         "Authorization": "Bearer <TOK>",
         "Content-Type": "application/json",
-        "Openai-Beta": "responses=experimental",
-        "User-Agent": "codex-cli/0.149.0 (<OS>; <ARCH>)",
-        "Version": "0.149.0",
-        "X-Codex-Beta-Features": "responses_websockets"
+        "Openai-Beta": "responses_websockets=2026-02-06",
+        "User-Agent": "codex-cli/0.156.1 (<OS>; <ARCH>)",
+        "Version": "0.156.1"
       }
     },
     "url": {
@@ -1656,7 +1699,7 @@
     }
   },
   "deepseek": {
-    "format": "openai-responses",
+    "format": "openai",
     "headers": {
       "apiKey": {
         "Accept": "text/event-stream",
@@ -1674,8 +1717,8 @@
       }
     },
     "url": {
-      "nonStream": "https://api.deepseek.com/responses",
-      "stream": "https://api.deepseek.com/responses"
+      "nonStream": "https://api.deepseek.com/chat/completions",
+      "stream": "https://api.deepseek.com/chat/completions"
     }
   },
   "deepseek-web": {
@@ -1975,6 +2018,29 @@
     "url": {
       "nonStream": "https://api.electronhub.ai/v1/chat/completions",
       "stream": "https://api.electronhub.ai/v1/chat/completions"
+    }
+  },
+  "eurouter": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.eurouter.ai/v1/chat/completions",
+      "stream": "https://api.eurouter.ai/v1/chat/completions"
     }
   },
   "factory": {
@@ -2424,9 +2490,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user"
@@ -2438,9 +2504,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user"
@@ -2452,9 +2518,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user"
@@ -2498,9 +2564,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user",
@@ -2513,9 +2579,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user",
@@ -2528,9 +2594,9 @@
         "X-Initiator": "user",
         "copilot-harness-id": "copilot-sdk",
         "copilot-integration-id": "copilot-developer-cli",
-        "editor-version": "copilot/1.0.81-6",
+        "editor-version": "copilot/1.0.88",
         "openai-intent": "conversation-agent",
-        "user-agent": "copilot/1.0.81-6",
+        "user-agent": "copilot/1.0.88 (linux) term/unknown",
         "x-client-machine-id": "<UUID>",
         "x-github-api-version": "2026-08-01",
         "x-interaction-type": "conversation-user",
@@ -2696,6 +2762,29 @@
     "url": {
       "nonStream": "https://api.z.ai/api/coding/paas/v4/chat/completions",
       "stream": "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    }
+  },
+  "greenpt": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.greenpt.ai/v1/chat/completions",
+      "stream": "https://api.greenpt.ai/v1/chat/completions"
     }
   },
   "grok-cli": {
@@ -3591,6 +3680,29 @@
       "stream": "https://api.longcat.chat/openai/v1/chat/completions"
     }
   },
+  "lyceum": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.lyceum.technology/openai/v1/chat/completions",
+      "stream": "https://api.lyceum.technology/openai/v1/chat/completions"
+    }
+  },
   "maritalk": {
     "format": "openai",
     "headers": {
@@ -3612,6 +3724,29 @@
     "url": {
       "nonStream": "https://chat.maritaca.ai/api",
       "stream": "https://chat.maritaca.ai/api"
+    }
+  },
+  "maxai": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.maxai.me",
+      "stream": "https://api.maxai.me"
     }
   },
   "meganova-ai": {
@@ -3942,19 +4077,25 @@
       "apiKey": {
         "Accept": "text/event-stream",
         "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "muse-build/1.3.0 (interactive; macos-aarch64; build ac7280f2aca67769d1455a8847bb502b617d50f6)"
       },
       "nonStream": {
         "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "muse-build/1.3.0 (interactive; macos-aarch64; build ac7280f2aca67769d1455a8847bb502b617d50f6)"
       },
       "oauth": {
         "Accept": "text/event-stream",
         "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "muse-build/1.3.0 (interactive; macos-aarch64; build ac7280f2aca67769d1455a8847bb502b617d50f6)"
       }
     },
-    "url": {}
+    "url": {
+      "nonStream": "https://api.meta.ai/v1/responses",
+      "stream": "https://api.meta.ai/v1/responses"
+    }
   },
   "muse-spark-web": {
     "format": "openai",
@@ -4139,8 +4280,8 @@
       }
     },
     "url": {
-      "nonStream": "https://api.nlpcloud.io/v1/chat/completions",
-      "stream": "https://api.nlpcloud.io/v1/chat/completions"
+      "nonStream": "https://api.nlpcloud.io/v1/gpu",
+      "stream": "https://api.nlpcloud.io/v1/gpu"
     }
   },
   "notion-web": {
@@ -5051,8 +5192,8 @@
       }
     },
     "url": {
-      "nonStream": "https://api.regolo.ai",
-      "stream": "https://api.regolo.ai"
+      "nonStream": "https://api.regolo.ai/v1/chat/completions",
+      "stream": "https://api.regolo.ai/v1/chat/completions"
     }
   },
   "reka": {
@@ -5219,6 +5360,29 @@
       "stream": "https://api.sea-lion.ai/v1/chat/completions"
     }
   },
+  "seekai": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://seekai.cc/v1/chat/completions",
+      "stream": "https://seekai.cc/v1/chat/completions"
+    }
+  },
   "sensenova": {
     "format": "openai",
     "headers": {
@@ -5380,29 +5544,6 @@
       "stream": "https://ai.sumopod.com/v1/chat/completions"
     }
   },
-  "suno": {
-    "format": "openai",
-    "headers": {
-      "apiKey": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "nonStream": {
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "oauth": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      }
-    },
-    "url": {
-      "nonStream": "https://studio-api.suno.ai/api/generate/v2/",
-      "stream": "https://studio-api.suno.ai/api/generate/v2/"
-    }
-  },
   "synthetic": {
     "format": "openai",
     "headers": {
@@ -5519,29 +5660,6 @@
     "url": {
       "nonStream": "https://aistudio.tencent.ai/api/chat",
       "stream": "https://aistudio.tencent.ai/api/chat"
-    }
-  },
-  "theoldllm": {
-    "format": "openai",
-    "headers": {
-      "apiKey": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "nonStream": {
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      },
-      "oauth": {
-        "Accept": "text/event-stream",
-        "Authorization": "Bearer <TOK>",
-        "Content-Type": "application/json"
-      }
-    },
-    "url": {
-      "nonStream": "https://theoldllm.vercel.app/api/chatgpt",
-      "stream": "https://theoldllm.vercel.app/api/chatgpt"
     }
   },
   "tinycms-web": {
@@ -5703,6 +5821,52 @@
     "url": {
       "nonStream": "https://api.opentyphoon.ai/v1/chat/completions",
       "stream": "https://api.opentyphoon.ai/v1/chat/completions"
+    }
+  },
+  "uc": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://internal-6.pubyar.com",
+      "stream": "https://internal-6.pubyar.com"
+    }
+  },
+  "uc-direct": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      },
+      "nonStream": {
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "x-api-key": "<CRED>"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.uncensored.com/api/v1",
+      "stream": "https://api.uncensored.com/api/v1"
     }
   },
   "udio": {
@@ -6212,6 +6376,29 @@
     "url": {
       "nonStream": "https://token-plan-sgp.xiaomimimo.com/v1",
       "stream": "https://token-plan-sgp.xiaomimimo.com/v1"
+    }
+  },
+  "xkiro": {
+    "format": "openai",
+    "headers": {
+      "apiKey": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "nonStream": {
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      },
+      "oauth": {
+        "Accept": "text/event-stream",
+        "Authorization": "Bearer <TOK>",
+        "Content-Type": "application/json"
+      }
+    },
+    "url": {
+      "nonStream": "https://api.xkiro.com/v1/chat/completions",
+      "stream": "https://api.xkiro.com/v1/chat/completions"
     }
   },
   "yi": {

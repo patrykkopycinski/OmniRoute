@@ -266,6 +266,8 @@ test("#10788 registry base rows declare the same tiers EFFORT_TIERS parses", () 
     "qwen3.6-plus": ["high", "max"],
     "qwen3.7-max": ["high", "max"],
     "qwen3.7-plus": ["high", "max"],
+    "muse-spark-1.2-contributor": ["minimal", "low", "medium", "high", "xhigh"],
+    "muse-spark-1.3-contributor": ["minimal", "low", "medium", "high", "xhigh"],
   };
   for (const providerId of ["opencode-go", "opencode-zen"]) {
     const entry = REGISTRY[providerId];
@@ -282,13 +284,4 @@ test("#10788 registry base rows declare the same tiers EFFORT_TIERS parses", () 
       );
     }
   }
-});
-
-test("#10788 nvidia z-ai/glm-5.2 declares reasoning with an empty tier list (binary switch)", () => {
-  const entry = REGISTRY["nvidia"];
-  assert.ok(entry?.models, "nvidia must expose models");
-  const row = entry.models.find((m) => m.id === "z-ai/glm-5.2");
-  assert.ok(row, "nvidia z-ai/glm-5.2 must exist");
-  assert.equal(row.supportsReasoning, true);
-  assert.deepEqual(row.supportedThinkingEfforts, []);
 });

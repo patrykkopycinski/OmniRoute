@@ -3,7 +3,7 @@
  *
  * Inspired by ClawRouter commit 14c83c258 "refactor: extract routing into pluggable RouterStrategy system".
  * Provides a RouterStrategy interface and built-in implementations:
- *   - RulesStrategy (default): wraps the existing 15-factor scoring engine
+ *   - RulesStrategy (default): wraps the existing 16-factor scoring engine
  *   - ScoreStrategy: highest configured weighted score, with explicit exploration
  *   - CostStrategy: always picks cheapest available model
  *   - LatencyStrategy: prioritizes low p95 latency with reliability weighting
@@ -53,7 +53,7 @@ export interface RouterStrategy {
   select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision;
 }
 
-// ── RulesStrategy: wraps 15-factor scoring engine ───────────────────────────
+// ── RulesStrategy: wraps 16-factor scoring engine ───────────────────────────
 
 function toSpeedCandidate(c: ProviderCandidate): SpeedCandidate {
   return {
@@ -87,7 +87,7 @@ function toSpeedCandidate(c: ProviderCandidate): SpeedCandidate {
 
 class RulesStrategyImpl implements RouterStrategy {
   readonly name = "rules";
-  readonly description = "15-factor weighted scoring (see DEFAULT_WEIGHTS)";
+  readonly description = "16-factor weighted scoring (see DEFAULT_WEIGHTS)";
 
   select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
     const eligible = pool.filter((c) => c.circuitBreakerState !== "OPEN");

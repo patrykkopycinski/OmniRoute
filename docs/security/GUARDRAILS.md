@@ -476,6 +476,49 @@ fusion counters. The default Video Bridge path does not invoke speech-to-text
 or download a second media copy; without that explicit track, it remains
 video-only.
 
+**Transcript retention (#12150 P1).** This applies automatically whenever the
+Video Bridge (itself opt-in) renders a transcript cue — there is no separate
+retention flag. When a request renders any transcript cue (a caller-declared
+`transcript` or a fused `audioTranscript`), the guardrail marks it
+`videoBridgeObserved` and produces a redacted shadow of the video description —
+an identical rendering in which every cue's free-text body is replaced by
+`[redacted-video-transcript]`, built by substituting the structured cue field
+before the string is assembled (never by parsing the flattened text, so no cue
+content — adversarial or ordinary, including bodies containing `]` such as
+`[inaudible]`/`[music]` — can survive). The persisted call-log request body swaps
+each video-derived text part for that redacted shadow, matched by content
+equality; the `fullText` anchor is re-read from the finished pre-call guardrail
+payload, so the match still succeeds after later chain guardrails (the PII and
+credential maskers, priorities 10/95) rewrite the description text in place and
+after system-prompt/handoff/memory injection reshapes the message array. The
+body sent upstream to the model is unchanged. An observed request also populates
+no durable Memory (both request- and response-derived extraction are skipped),
+so the model's own reply cannot echo transcript text into Memory.
+
+Additional retained copies use the same observed-request signal. The raw
+pre-guardrail client-request snapshot, in-memory pending request, and early
+rejected-request log structurally replace transcript fields in video parts;
+string prompts synthesized by pipeline stages and context handoff are redacted
+at the persisted-request-body sink. The persisted `video_content_removed` marker
+makes `previous_response_id` continuation fail closed rather than reconstruct
+text that was intentionally discarded. If an observed request loses its
+per-part redaction shadow before logging, or even one of several video shadows
+fails to match after later request mutations, the retained request body is
+omitted entirely instead of retaining a partially redacted transcript.
+
+For an observed request, a model response might quote any portion of the
+transcript without a structured cue boundary. Its persisted call-log
+`responseBody` is therefore replaced by an omission marker; the detailed
+pipeline artifact (which can include upstream/client bodies and stream chunks)
+is not retained. Semantic, idempotency, and reasoning-replay caches bypass
+reads and writes for that request. The provider request and client-visible
+response remain unchanged. Early keepalive bytes are drained from the temporary
+buffer when the detailed artifact is omitted. Kiro's malformed EventStream
+warning reports only the payload byte count, never its contents or the JSON
+parser's raw error.
+This does not claim that every unrelated provider/plugin diagnostic has been
+audited; the broader retained-sink sweep is tracked in #11658.
+
 The internal `/api/modality-bridge/video/drilldown` lifecycle is a separate,
 loopback/token-authenticated cache substrate. Every operation also requires a
 canonical opaque principal ID. Before a production caller is enabled, it must

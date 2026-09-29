@@ -16,6 +16,7 @@
  */
 
 import { createLogger } from "../utils/logger";
+import { DEFAULT_REQUEST_QUEUE_MAX_WAIT_MS } from "../../lib/resilience/settings";
 import v8 from "node:v8";
 import { trackRequest } from "../../lib/gracefulShutdown";
 import { resolveIngestByteBudget, type IngestBudgetSource } from "./admissionBudget";
@@ -38,6 +39,7 @@ import {
   type IngestBudgetAcquireResult,
 } from "./ingestByteAdmission";
 import {
+  checkResourcePressureGuard,
   getResourcePressureObservation,
   type PressureSeverity,
 } from "@omniroute/open-sse/utils/resourcePressure.ts";
@@ -73,10 +75,20 @@ export const CHAT_MAX_HEAVY_IN_FLIGHT = parsePositiveInt(
  * that routinely land on the admission gate together; an immediate 503 makes the
  * client burn its retry budget in seconds and the agent dies mid-task. A short
  * bounded wait serializes the burst instead. `0` (legacy) rejects immediately.
+ *
+ * The default tracks `requestQueue.maxWaitMs` rather than carrying a number of its
+ * own, because a wait shorter than the occupancy it must bridge cannot serialize
+ * anything. The single default heavyweight slot is held for the whole upstream
+ * turn, which the resilience layer already budgets at that value (15s), so the old
+ * fixed 2s expired inside every one of them: a single large-context session shed
+ * itself with `reason:"queue_timeout", activeHeavy:1, waiting:0` — one holder, no
+ * contention, nothing for the 503 to protect against (#13648). Tying the two
+ * together also means an operator who raises `RATE_LIMIT_MAX_WAIT_MS` for slow
+ * upstreams does not have to discover this second knob to keep the gate coherent.
  */
 export const CHAT_ADMISSION_QUEUE_MAX_MS = parseNonNegativeInt(
   process.env.OMNIROUTE_CHAT_ADMISSION_QUEUE_MS,
-  2000
+  DEFAULT_REQUEST_QUEUE_MAX_WAIT_MS
 );
 
 /**
@@ -91,6 +103,21 @@ export const CHAT_ADMISSION_MAX_QUEUED_BYTES = parsePositiveInt(
   process.env.OMNIROUTE_CHAT_ADMISSION_MAX_QUEUED_BYTES,
   4 * 1024 * 1024
 );
+
+/**
+ * Ceiling for the occupancy-derived `Retry-After` on a capacity 503 (#12135). A
+ * heavyweight lease is held for the whole SSE lifetime, so the hint is derived from how
+ * long capacity has demonstrably been busy (`ChatAdmissionController#retryAfterSeconds`);
+ * this cap keeps a multi-minute stream from telling a client to sleep for minutes when
+ * another slot may free far sooner.
+ */
+export const CHAT_ADMISSION_RETRY_AFTER_MAX_SECONDS = 60;
+
+// #13649: `#cleanup` sweep interval — defensive fallback only, every queue
+// already self-removes via `#removeFairKey`; an EMPTY key idle past the TTL
+// below is swept, a non-empty one never is.
+export const CHAT_ADMISSION_QUEUE_CLEANUP_INTERVAL_MS = 60_000;
+export const CHAT_ADMISSION_QUEUE_IDLE_TTL_MS = 300_000;
 
 export const CHAT_HEAVY_MESSAGE_COUNT = parsePositiveInt(
   process.env.OMNIROUTE_CHAT_HEAVY_MESSAGE_COUNT,
@@ -208,10 +235,45 @@ export type ChatAdmissionShedReason =
   | "inflight_bytes_budget"
   | "resource_pressure";
 
-/** Read cached pressure severity; sampling failures must not cause false sheds. */
+/**
+ * Read pressure severity for admission decisions.
+ *
+ * This MUST drive an active re-sample (`checkResourcePressureGuard`), not a
+ * passive cache read of `getResourcePressureObservation`. The resource-pressure
+ * runtime only refreshes its sample and re-evaluates recovery from *inside*
+ * `check()` (via `scheduleRefresh`) — nothing else in the singleton mutates
+ * `state` or schedules a refresh. The structural admission gate that calls
+ * this function runs *before* every other code path that would otherwise call
+ * `check()` (`handleChatCore`, `checkResourcePressureBeforeProviderWork`,
+ * `AdaptiveAdmissionRuntimeImpl.acquire`) — so once `state.severity` flips to
+ * "critical", a passive read here sheds every subsequent request before any
+ * of those downstream paths can run, which means `check()` never gets called
+ * again and the guard can never observe recovery. See
+ * https://github.com/diegosouzapw/OmniRoute/issues/13821.
+ *
+ * `checkResourcePressureGuard()` is cheap on the hot path: it only does a
+ * synchronous `process.memoryUsage()` read plus a timestamp comparison per
+ * call; the actual signal sampling (`/proc/pressure/memory`, cgroup reads)
+ * happens asynchronously via `scheduleRefresh()` and is throttled by
+ * `staleAfterMs`, so calling this on every admitted request does not add
+ * per-request I/O.
+ *
+ * A non-null guard is this request's authoritative "shed now" answer and maps
+ * to "critical". A null guard means this request is not shed, but the
+ * observation's cached label can still read "critical" for a few more
+ * milliseconds until the async refresh settles (or if the last real sample
+ * merely went stale — `check()`'s own `maxStaleMs` fallback) — reporting that
+ * stale "critical" label to callers that branch on severity (e.g. the queue
+ * wait sizing at admitChatRequest's `reserve()`) would just re-introduce the
+ * same "never downgrades" problem for the "high" queueing bucket, so it is
+ * downgraded to "high" here instead.
+ */
 export function defaultPressureSeverity(): PressureSeverity {
   try {
-    return getResourcePressureObservation().state.severity;
+    const guard = checkResourcePressureGuard();
+    if (guard) return "critical";
+    const severity = getResourcePressureObservation().state.severity;
+    return severity === "critical" ? "high" : severity;
   } catch {
     return "normal";
   }
@@ -260,6 +322,9 @@ export class ChatAdmissionController {
    * `CHAT_MAX_HEAVY_IN_FLIGHT` bound, but still a real, finite ceiling instead of
    * the unconditional bypass this replaces. */
   #activeHealthy = 0;
+  /** #12135: acquisition time of every live heavy lease, keyed by an opaque token, so the
+   * capacity 503 can advertise a `Retry-After` derived from observed occupancy. */
+  #heavyLeaseStartedAt = new Map<symbol, number>();
   /** Per-key FIFOs. A key groups one client's waiters so they are served
    * round-robin against the shared budget instead of monopolizing a strict
    * FIFO (see #dispatchFair). */
@@ -272,6 +337,7 @@ export class ChatAdmissionController {
    * shed was invisible. Same in-memory lifetime as the rest of the snapshot state. */
   #shedTotal = 0;
   #shedsByReason = new Map<string, number>();
+  #queueTimestamps = new Map<string, number>();
   readonly #onShed: ChatAdmissionShedSink;
 
   readonly #ingestBudget: IngestByteAdmissionController;
@@ -307,6 +373,27 @@ export class ChatAdmissionController {
       ...budgetOptions,
       onShed: (reason, lane) => this.recordShed(reason, lane),
     });
+    setInterval(() => this.#cleanup(), CHAT_ADMISSION_QUEUE_CLEANUP_INTERVAL_MS).unref();
+  }
+
+  #cleanup(now = Date.now()) {
+    // #13649: defensive sweep — never evicts a key with parked waiters.
+    for (const [key, timestamp] of this.#queueTimestamps) {
+      if (now - timestamp <= CHAT_ADMISSION_QUEUE_IDLE_TTL_MS) continue;
+      const queue = this.#queues.get(key);
+      if (queue && queue.length > 0) continue;
+      this.#removeFairKey(key);
+    }
+  }
+
+  _runCleanupForTest(now = Date.now()): void {
+    this.#cleanup(now);
+  }
+  _seedQueueTimestampForTest(key: string, timestamp: number): void {
+    this.#queueTimestamps.set(key, timestamp);
+  }
+  _queueTimestampCountForTest(): number {
+    return this.#queueTimestamps.size;
   }
 
   get activeHeavy(): number {
@@ -397,6 +484,8 @@ export class ChatAdmissionController {
   tryAcquireHeavy(): ChatAdmissionLease | null {
     if (this.#activeHeavy >= this.maxHeavyInFlight) return null;
     this.#activeHeavy += 1;
+    const token = Symbol("heavy-lease");
+    this.#heavyLeaseStartedAt.set(token, Date.now());
     const done = trackRequest();
     let released = false;
     return {
@@ -407,10 +496,37 @@ export class ChatAdmissionController {
         if (released) return;
         released = true;
         this.#activeHeavy = Math.max(0, this.#activeHeavy - 1);
+        this.#heavyLeaseStartedAt.delete(token);
         done();
         this.#dispatchFair();
       },
     };
+  }
+
+  /**
+   * `Retry-After` (whole seconds) for a capacity 503, derived from live occupancy instead
+   * of a fixed constant (#12135). A heavyweight lease is held for the ENTIRE SSE lifetime
+   * (tens of seconds to minutes), so a fixed 1–2 s hint invited clients to re-send the
+   * same ~1 MiB body every second into a gate that could not possibly have cleared. The
+   * hint is the larger of:
+   *  - `queueMs`, the bounded wait the caller already exhausted — the server itself needed
+   *    longer than that, so advertising less is dishonest; and
+   *  - the age of the YOUNGEST live heavy lease: the time since heavyweight capacity last
+   *    turned over. Every slot has been continuously held at least that long, so it is the
+   *    observed floor on how long "busy" has lasted (the oldest lease would be a pessimist
+   *    with N slots in flight).
+   * Rounded up and capped at `CHAT_ADMISSION_RETRY_AFTER_MAX_SECONDS`. The response
+   * builders floor the result at their historical value (1 s structural, 2 s byte-stage),
+   * so an idle gate answers exactly as before.
+   */
+  retryAfterSeconds(queueMs: number, now = Date.now()): number {
+    let youngestAgeMs = Number.POSITIVE_INFINITY;
+    for (const startedAt of this.#heavyLeaseStartedAt.values()) {
+      youngestAgeMs = Math.min(youngestAgeMs, now - startedAt);
+    }
+    const occupancyMs = Number.isFinite(youngestAgeMs) ? youngestAgeMs : 0;
+    const hintSeconds = Math.ceil(Math.max(0, queueMs, occupancyMs) / 1000);
+    return Math.min(CHAT_ADMISSION_RETRY_AFTER_MAX_SECONDS, Math.max(1, hintSeconds));
   }
 
   /**
@@ -467,6 +583,7 @@ export class ChatAdmissionController {
         queue = [];
         this.#queues.set(sessionKey, queue);
         this.#fairKeys.push(sessionKey);
+        this.#queueTimestamps.set(sessionKey, Date.now());
       }
       const lane = queue;
       let resolveParked: (() => void) | null = null;
@@ -525,6 +642,7 @@ export class ChatAdmissionController {
 
   #removeFairKey(key: string): void {
     this.#queues.delete(key);
+    this.#queueTimestamps.delete(key); // #13649: lockstep with the drain path
     const index = this.#fairKeys.indexOf(key);
     if (index < 0) return;
     this.#fairKeys.splice(index, 1);
@@ -843,26 +961,41 @@ export async function admitChatStructure(
   // Structural-only waits happen on byte-light bodies (a byte-heavy body already
   // holds the byte-stage lease), so the conservative 256KB weight bounds the
   // parsed JSON the waiter keeps resident while parked.
+  const queueMs = options.queueMs ?? 0;
   const acquiredCount = await controller.acquireHeavyWithin(
-    options.queueMs ?? 0,
+    queueMs,
     options.signal,
     CHAT_LARGE_BODY_BYTES,
     options.sessionId
   );
   if (!acquiredCount) {
-    return { admit: false, response: structuralRejectionResponse(503, maxMessages) };
+    return {
+      admit: false,
+      response: structuralRejectionResponse(
+        503,
+        maxMessages,
+        controller.retryAfterSeconds(queueMs)
+      ),
+    };
   }
 
   // #503-fanout: same composed count+budget gate as the fast path above.
   const acquiredBudget = await controller.acquireBudgetWithin(
     CHAT_LARGE_BODY_BYTES,
-    options.queueMs ?? 0,
+    queueMs,
     options.signal,
     options.sessionId
   );
   if (acquiredBudget.status !== "acquired") {
     acquiredCount.release();
-    return { admit: false, response: structuralRejectionResponse(503, maxMessages) };
+    return {
+      admit: false,
+      response: structuralRejectionResponse(
+        503,
+        maxMessages,
+        controller.retryAfterSeconds(queueMs)
+      ),
+    };
   }
   return {
     admit: true,
@@ -889,14 +1022,7 @@ function rebuildRequest(request: Request, body: Uint8Array): Request {
   } as RequestInit & { duplex: "half" });
 }
 
-/**
- * Reserve heavyweight capacity and ingest the body with a hard byte bound before JSON
- * parsing. Missing/invalid Content-Length is sniffed only up to the heavyweight threshold;
- * a lease is acquired atomically before retaining bytes at or beyond that threshold.
- *
- * Internal self-loop sub-requests (vision-bridge describe calls) bypass the lease
- * reservation — they run inside a parent request that already holds the lease.
- */
+/** Reserve heavyweight capacity and ingest the body with a hard byte bound. */
 export async function admitChatRequest(
   request: Request,
   options: {
@@ -905,6 +1031,7 @@ export async function admitChatRequest(
     largeBodyBytes?: number;
     hardMaxBytes?: number;
     queueMs?: number;
+    heapPressureCheck?: () => boolean;
   } = {}
 ): Promise<ChatRequestAdmission> {
   const sessionId = options.sessionId ?? resolveSessionId(request);
@@ -972,15 +1099,16 @@ export async function admitChatRequest(
     return { admit: false, response: bodyExceedsBudgetResponse(controller.maxInflightBytes) };
   }
 
+  const heapPressureCheck = options.heapPressureCheck ?? defaultHeapPressureCheck;
   let lease: ChatAdmissionLease | null = null;
+  // #10437: busy primary + healthy heap uses tryAcquireHealthyHeadroom; else queue/shed.
+  // Bodies at/above OMNIROUTE_CHAT_LARGE_BODY_BYTES take this same heavyweight lease.
   const reserve = async (bytes = 0): Promise<boolean> => {
     if (lease) return true;
-    const countLease = await controller.acquireHeavyWithin(
-      queueMs,
-      request.signal,
-      bytes,
-      sessionId
-    );
+    const countLease =
+      controller.tryAcquireHeavy() ??
+      (!heapPressureCheck() ? controller.tryAcquireHealthyHeadroom() : null) ??
+      (await controller.acquireHeavyWithin(queueMs, request.signal, bytes, sessionId));
     if (!countLease) return false;
 
     // Additive ingest byte-budget gate (#503-fanout), layered on top of the
@@ -1006,6 +1134,10 @@ export async function admitChatRequest(
     return true;
   };
 
+  // #12135: the capacity 503 advertises an occupancy-derived Retry-After.
+  const busyResponse = () =>
+    chatAdmissionRejectionResponse(503, hardMaxBytes, controller.retryAfterSeconds(queueMs));
+
   // A known-large declaration can reserve before ingestion. Unknown lengths are boundedly
   // sniffed below; this avoids consuming scarce heavyweight capacity for small chunked bodies.
   if (
@@ -1013,7 +1145,7 @@ export async function admitChatRequest(
     contentLength >= largeBodyBytes &&
     !(await reserve(Math.min(contentLength, hardMaxBytes)))
   ) {
-    return { admit: false, response: chatAdmissionRejectionResponse(503, hardMaxBytes) };
+    return { admit: false, response: busyResponse() };
   }
 
   const reader = request.body?.getReader();
@@ -1039,7 +1171,7 @@ export async function admitChatRequest(
       }
       if (totalBytes >= largeBodyBytes && !(await reserve(totalBytes))) {
         await reader.cancel("chat admission capacity unavailable").catch(() => undefined);
-        return { admit: false, response: chatAdmissionRejectionResponse(503, hardMaxBytes) };
+        return { admit: false, response: busyResponse() };
       }
       chunks.push(value);
     }
@@ -1059,56 +1191,10 @@ export async function admitChatRequest(
   return { admit: true, request: rebuildRequest(request, body), lease };
 }
 
-/** Release a lease if a handler rejects; otherwise bind it to the returned response lifecycle. */
-export async function releaseChatAdmissionAfterHandler(
-  responsePromise: Promise<Response>,
-  lease: ChatAdmissionLease | null
-): Promise<Response> {
-  try {
-    return releaseChatAdmissionWhenDone(await responsePromise, lease);
-  } catch (error) {
-    lease?.release();
-    throw error;
-  }
-}
-
-/** Hold a heavyweight lease through an SSE response without buffering the response body. */
-export function releaseChatAdmissionWhenDone(
-  response: Response,
-  lease: ChatAdmissionLease | null
-): Response {
-  if (!lease) return response;
-  const isStreaming = response.headers.get("content-type")?.includes("text/event-stream");
-  if (!isStreaming || !response.body) {
-    lease.release();
-    return response;
-  }
-
-  const reader = response.body.getReader();
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          lease.release();
-          controller.close();
-        } else {
-          controller.enqueue(value);
-        }
-      } catch (error) {
-        lease.release();
-        controller.error(error);
-      }
-    },
-    async cancel(reason) {
-      lease.release();
-      await reader.cancel(reason).catch(() => undefined);
-    },
-  });
-
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-}
+// Lease release binding lives in ./chatAdmissionRelease. Re-exported here so
+// existing import sites keep working.
+export {
+  releaseChatAdmissionAfterHandler,
+  releaseChatAdmissionWhenDone,
+  type ReleaseChatAdmissionOptions,
+} from "./chatAdmissionRelease";

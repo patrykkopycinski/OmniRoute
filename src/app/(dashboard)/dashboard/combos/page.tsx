@@ -1,6 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  memo,
+  Suspense,
+} from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -22,6 +31,9 @@ import { buildAgentFeaturePatch } from "./comboAgentFeatures";
 import { useComboProxyAssignments } from "./useComboProxyAssignments";
 import { ResponseValidationEditor, type ResponseValidationValue } from "./ResponseValidationEditor";
 import ReasoningTokenBufferToggle from "./ReasoningTokenBufferToggle";
+import ComboTimeoutFields from "./ComboTimeoutFields";
+import ComboRrLegibilityFields from "./ComboRrLegibilityFields";
+import { persistConnectionAwareExpansion, persistStickyRoundRobinLimit } from "./comboRrLegibility";
 import { pickDisplayValue } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import { useNotificationStore } from "@/store/notificationStore";
@@ -73,6 +85,9 @@ import {
   normalizeIntelligentRoutingConfig,
 } from "@/lib/combos/intelligentRouting";
 import { getComboStepTarget } from "@/lib/combos/steps";
+import { DEAD_COMBO_CONFIG_KEYS } from "@/lib/combos/deadConfigKeys";
+import { modelFamily } from "@/lib/combos/invariants";
+import { resolveProviderAlias } from "@omniroute/open-sse/services/providerAlias.ts";
 import { resolveServerErrorMessage } from "@/lib/api/serverErrorMessage";
 import { useTranslations } from "next-intl";
 
@@ -176,6 +191,12 @@ const STRATEGY_GUIDANCE_FALLBACK = {
     avoid: "Avoid when models have similar context lengths or simple tasks.",
     example: "Example: Distribute long conversations across models with large context windows.",
   },
+  "quota-weighted": {
+    when: "Use when several accounts of the same model have quota snapshots and concurrent traffic should land on accounts that still have leftover.",
+    avoid: "Avoid when most accounts have no quota snapshots.",
+    example:
+      "Example: 10 Antigravity Gemini accounts with different 5h/weekly resets; skip empty ones and pick among the rest in proportion to leftover.",
+  },
 };
 
 const ADVANCED_FIELD_HELP_FALLBACK = {
@@ -191,8 +212,6 @@ const ADVANCED_FIELD_HELP_FALLBACK = {
     "Weighted sticky batch size: consecutive successful requests sent to the selected weighted target before drawing again. Empty or 1 keeps the current per-request weighted draw.",
   failoverBeforeRetry:
     "When enabled, a 429 from the upstream triggers immediate target failover instead of retrying the same URL first.",
-  targetTimeoutMs:
-    "Optional combo target timeout. Empty inherits the current request timeout; larger values are capped to that timeout.",
   maxSetRetries:
     "Number of times to retry the full target set when every target fails. 0 = no set-level retry.",
   setRetryDelayMs:
@@ -203,45 +222,21 @@ const ADVANCED_FIELD_HELP_FALLBACK = {
     "What to do when the next combo target cannot accept the original reasoning transport. Drop is the default: it removes reasoning state and tries the target. Skip leaves the request body untouched and falls through.",
 };
 
-const LEGACY_COMBO_RESILIENCE_KEYS = new Set([
+// UI-only keys the modal manages itself (never persisted by this path):
+// timeoutMs, healthCheckEnabled, healthCheckTimeoutMs.
+const NON_PERSISTED_COMBO_CONFIG_KEYS = new Set([
+  ...DEAD_COMBO_CONFIG_KEYS,
   "timeoutMs",
   "healthCheckEnabled",
   "healthCheckTimeoutMs",
-  "queueTimeoutMs",
-  "queueDepth",
-  "fallbackDelayMs",
-  "handoffProviders",
-  "maxComboDepth",
-  "manifestRouting",
-  "complexityAwareRouting",
-  "pipeline_enabled",
-  "pipelineConcurrency",
-  "shadowRouting",
-  "evalRouting",
-  "resetAwareEnabled",
-  "resetAwareWindow",
 ]);
-const MS_PER_SECOND = 1000;
-
-function msToOptionalSecondsInput(value) {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms <= 0) return "";
-  return String(Math.round(ms / MS_PER_SECOND));
-}
-
-function secondsInputToOptionalMs(value, maxSeconds = 86400) {
-  if (!value) return undefined;
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
-  return Math.min(maxSeconds, Math.round(seconds)) * MS_PER_SECOND;
-}
 
 function sanitizeComboRuntimeConfig(config) {
   if (!config || typeof config !== "object") return {};
   return Object.fromEntries(
     Object.entries(config).filter(
       ([key, value]) =>
-        value !== undefined && value !== null && !LEGACY_COMBO_RESILIENCE_KEYS.has(key)
+        value !== undefined && value !== null && !NON_PERSISTED_COMBO_CONFIG_KEYS.has(key)
     )
   );
 }
@@ -384,9 +379,55 @@ const STRATEGY_RECOMMENDATIONS_FALLBACK = {
       "Use when context limits are a bottleneck for your workload.",
     ],
   },
+  "quota-weighted": {
+    title: "Quota-weighted account spread",
+    description:
+      "Drops exhausted accounts, keeps a 1% soft floor, then picks the first target in proportion to leftover divided by in-flight load. Existing conversations stay pinned.",
+    tips: [
+      "Keep session stickiness on (the default). New conversations spread by leftover and in-flight load; an existing conversation stays on its account until that account is empty, then rebinds.",
+      "Needs per-account quota snapshots. Missing snapshots stay eligible but only at the reset-aware missing-quota score (0.5).",
+      "The 1% floor is a last-resort pool. An empty A pool still serves B instead of returning 404.",
+    ],
+  },
 };
 
 const COMBO_USAGE_GUIDE_STORAGE_KEY = "omniroute:combos:hide-usage-guide";
+
+// The dismissal lives in localStorage, which SSR cannot read: a lazy useState
+// initializer would render "not dismissed" on the server and the real value on
+// the client, and correcting that in an effect is a synchronous setState inside
+// an effect (react-hooks/set-state-in-effect) that costs an extra commit of this
+// whole tree. useSyncExternalStore is the sanctioned shape for exactly this —
+// getServerSnapshot supplies the SSR-safe default, getSnapshot reads the store
+// after hydration, and the two handlers below notify subscribers instead of
+// setting state. The `storage` listener keeps other tabs in sync for free.
+const usageGuideListeners = new Set<() => void>();
+
+function subscribeUsageGuide(onStoreChange: () => void): () => void {
+  usageGuideListeners.add(onStoreChange);
+  globalThis.addEventListener?.("storage", onStoreChange);
+  return () => {
+    usageGuideListeners.delete(onStoreChange);
+    globalThis.removeEventListener?.("storage", onStoreChange);
+  };
+}
+
+function emitUsageGuideChange(): void {
+  for (const listener of usageGuideListeners) listener();
+}
+
+function getUsageGuideSnapshot(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1";
+  } catch {
+    // Storage access errors (privacy mode / restricted environments) show the guide.
+    return true;
+  }
+}
+
+function getUsageGuideServerSnapshot(): boolean {
+  return true;
+}
 
 // Pure predicate hoisted out of the page component to keep its cyclomatic budget flat
 // (check:complexity new-code mode).
@@ -616,6 +657,54 @@ function normalizeModelEntry(entry) {
   };
 }
 
+/**
+ * On an existing-combo edit, work out how the dashboard save should synchronize
+ * `allowedProviders` / `allowedModelFamilies` against the combo's new step list so
+ * adding a step across providers never triggers COMBO_008 (#13951). Both restrictions
+ * are only ever WIDENED or left untouched here — never synthesized from no restriction,
+ * and never wiped just because the combo happens to have one.
+ */
+function computeAllowedRestrictionSync(
+  isEdit: boolean,
+  combo: { allowedProviders?: unknown; allowedModelFamilies?: unknown } | null | undefined,
+  models: Array<{ providerId?: string; model?: string }>
+): { allowedProviders?: string[]; allowedModelFamilies?: null; overrideAllowedProviders?: true } {
+  if (!isEdit) return {};
+  const result: {
+    allowedProviders?: string[];
+    allowedModelFamilies?: null;
+    overrideAllowedProviders?: true;
+  } = { overrideAllowedProviders: true };
+
+  const existingProviders = Array.isArray(combo?.allowedProviders) ? combo.allowedProviders : [];
+  if (existingProviders.length > 0) {
+    const stepProviders = models
+      .map((m) => {
+        if (m.providerId) return m.providerId;
+        if (typeof m.model !== "string" || !m.model.includes("/")) return "";
+        const [aliasOrProvider] = m.model.split("/");
+        return resolveProviderAlias(aliasOrProvider) || "";
+      })
+      .filter((p): p is string => Boolean(p));
+    result.allowedProviders = Array.from(new Set([...existingProviders, ...stepProviders]));
+  }
+
+  // Only clear the family restriction when a new step actually violates it (#13951).
+  const existingFamilies = Array.isArray(combo?.allowedModelFamilies)
+    ? combo.allowedModelFamilies
+    : [];
+  if (existingFamilies.length > 0) {
+    const allowedFamilies = new Set(existingFamilies);
+    const stepViolatesFamilies = models.some((m) => {
+      const family = typeof m.model === "string" ? modelFamily(m.model) : null;
+      return !family || !allowedFamilies.has(family);
+    });
+    if (stepViolatesFamilies) result.allowedModelFamilies = null;
+  }
+
+  return result;
+}
+
 function getModelString(entry) {
   if (typeof entry === "string") return entry;
   if (entry?.kind === "combo-ref") return entry.comboName;
@@ -741,7 +830,7 @@ function formatComboEntryDisplay(
   return `${providerLabel}/${modelLabel}`;
 }
 
-export default function CombosPage() {
+function CombosPageContent() {
   const t = useTranslations("combos");
   const tc = useTranslations("common");
   const emailsVisible = useEmailPrivacyStore((s) => s.emailsVisible);
@@ -761,21 +850,30 @@ export default function CombosPage() {
   const [proxyConfig, setProxyConfig] = useState(null);
   const { comboProxyAssignedIds, fetchComboProxyAssignments } = useComboProxyAssignments();
   const [providerNodes, setProviderNodes] = useState([]);
-  const [showUsageGuide, setShowUsageGuide] = useState(() => {
-    // Lazy initializer instead of a mount effect (react-hooks/set-state-in-effect).
-    try {
-      return globalThis.localStorage?.getItem(COMBO_USAGE_GUIDE_STORAGE_KEY) !== "1";
-    } catch {
-      // Ignore storage access errors (privacy mode / restricted environments)
-      return true;
-    }
-  });
+  // SSR has no localStorage, so a lazy initializer reading it here returns a
+  // different value server-side (always "not dismissed") than the client's
+  // real stored value -- exactly the kind of source React's hydration
+  // mismatch check is built to catch, and in dev mode a mismatch forces a
+  // full client-only re-render of this tree, discarding whatever the fetch
+  // effects below had already populated. useSyncExternalStore renders the
+  // SSR-safe default on both passes and switches to the stored value at
+  // hydration, without a second commit — see the store helpers above.
+  const usageGuideNotDismissed = useSyncExternalStore(
+    subscribeUsageGuide,
+    getUsageGuideSnapshot,
+    getUsageGuideServerSnapshot
+  );
+  // "Hide" (as opposed to "hide forever") is intentionally per-mount: it is not
+  // persisted, and remounting the page brings the guide back — same as before.
+  const [usageGuideHiddenForNow, setUsageGuideHiddenForNow] = useState(false);
+  const showUsageGuide = usageGuideNotDismissed && !usageGuideHiddenForNow;
   const [recentlyCreatedCombo, setRecentlyCreatedCombo] = useState("");
   const [creatingKimiPreset, setCreatingKimiPreset] = useState(false);
   const [comboDragIndex, setComboDragIndex] = useState(null);
   const [comboDragOverIndex, setComboDragOverIndex] = useState(null);
   const [savingComboOrder, setSavingComboOrder] = useState(false);
   const [comboConfigMode, setComboConfigMode] = useState("guided");
+  const [routingSettings, setRoutingSettings] = useState(null);
   const [promptCompressionEnabled, setPromptCompressionEnabled] = useState(false);
   const [selectedIntelligentComboId, setSelectedIntelligentComboId] = useState<string | null>(null);
   const comboDragIndexRef = useRef<number | null>(null);
@@ -843,7 +941,11 @@ export default function CombosPage() {
     })();
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
-      .then((settings) => setComboConfigMode(normalizeComboConfigMode(settings?.comboConfigMode)))
+      .then((settings) => {
+        if (!settings) return;
+        setComboConfigMode(normalizeComboConfigMode(settings.comboConfigMode));
+        setRoutingSettings(settings);
+      })
       .catch(() => setComboConfigMode("guided"));
     fetch("/api/settings/compression")
       .then((r) => (r.ok ? r.json() : null))
@@ -1000,17 +1102,18 @@ export default function CombosPage() {
   };
 
   const handleHideUsageGuideForever = () => {
-    setShowUsageGuide(false);
     try {
       globalThis.localStorage?.setItem(COMBO_USAGE_GUIDE_STORAGE_KEY, "1");
     } catch {}
+    emitUsageGuideChange();
   };
 
   const handleShowUsageGuide = () => {
-    setShowUsageGuide(true);
     try {
       globalThis.localStorage?.removeItem(COMBO_USAGE_GUIDE_STORAGE_KEY);
     } catch {}
+    setUsageGuideHiddenForNow(false);
+    emitUsageGuideChange();
   };
 
   const handleFilterChange = (nextFilter) => {
@@ -1143,7 +1246,7 @@ export default function CombosPage() {
 
       {showUsageGuide && (
         <ComboUsageGuide
-          onHide={() => setShowUsageGuide(false)}
+          onHide={() => setUsageGuideHiddenForNow(true)}
           onHideForever={handleHideUsageGuideForever}
           onCreateCombo={() => setShowCreateModal(true)}
         />
@@ -1348,6 +1451,7 @@ export default function CombosPage() {
         activeProviders={activeProviders}
         combo={null}
         comboConfigMode={comboConfigMode}
+        routingSettings={routingSettings}
       />
 
       <ComboFormModal
@@ -1358,6 +1462,7 @@ export default function CombosPage() {
         onSave={(data) => handleUpdate(editingCombo.id, data)}
         activeProviders={activeProviders}
         comboConfigMode={comboConfigMode}
+        routingSettings={routingSettings}
       />
 
       {proxyTargetCombo && (
@@ -1370,6 +1475,14 @@ export default function CombosPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function CombosPage() {
+  return (
+    <Suspense fallback={null}>
+      <CombosPageContent />
+    </Suspense>
   );
 }
 
@@ -1912,6 +2025,10 @@ function TestResultsView({ results }) {
 
   return (
     <div className="flex flex-col gap-2">
+      <p className="text-xs text-text-muted">
+        Targets are tested independently. This checks model health, not the combo’s routing strategy
+        or fallback order.
+      </p>
       {results.resolvedBy && (
         <div className="flex items-center gap-2 text-sm">
           <span className="material-symbols-outlined text-emerald-500 text-[18px]">
@@ -1919,7 +2036,7 @@ function TestResultsView({ results }) {
           </span>
           <div className="min-w-0">
             <div>
-              Resolved by:{" "}
+              First healthy target in combo order:{" "}
               <code className="text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded">
                 {results.resolvedBy}
               </code>
@@ -1964,6 +2081,12 @@ function TestResultsView({ results }) {
                 {r.stepId ? ` · ${r.stepId}` : ""}
               </div>
             ) : null}
+            {r.error && (
+              <p className="mt-2 whitespace-pre-wrap break-words text-red-500">
+                {r.statusCode ? `HTTP ${r.statusCode}: ` : ""}
+                {r.error}
+              </p>
+            )}
           </div>
           {r.latencyMs !== undefined && <span className="text-text-muted">{r.latencyMs}ms</span>}
           <span
@@ -1983,7 +2106,15 @@ function TestResultsView({ results }) {
   );
 }
 
-function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, comboConfigMode }) {
+function ComboFormModal({
+  isOpen,
+  combo,
+  onClose,
+  onSave,
+  activeProviders,
+  comboConfigMode,
+  routingSettings,
+}) {
   type CreateDraftSnapshot = {
     name: string;
     models: unknown[];
@@ -2847,18 +2978,29 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
     );
   };
 
+  // #14077: these ids are a literal, so they drift whenever a provider catalog
+  // changes and the combo is created with targets that resolve to nothing. The
+  // three Qoder entries below replace `kimi-k2-thinking`, `qwen3-coder-plus` and
+  // `deepseek-v3.2`, which the Qoder registry no longer carries.
+  // `tests/unit/combo-preset-models-resolve-14077.test.ts` pins every entry
+  // against the registry so the next catalog change fails there instead of in a
+  // user's combo.
   const FREE_STACK_PRESET_MODELS = [
     { model: "agy/gemini-3.7-flash-low", weight: 0 },
     { model: "kr/claude-sonnet-4.5", weight: 0 },
-    { model: "if/kimi-k2-thinking", weight: 0 },
-    { model: "if/qwen3-coder-plus", weight: 0 },
-    { model: "if/deepseek-v3.2", weight: 0 },
+    { model: "if/kimi-k2.7-code", weight: 0 },
+    { model: "if/qwen3.7-plus", weight: 0 },
+    { model: "if/deepseek-v4-pro", weight: 0 },
     { model: "nvidia/llama-3.3-70b-instruct", weight: 0 },
-    { model: "groq/llama-3.3-70b-versatile", weight: 0 },
+    { model: "groq/openai/gpt-oss-120b", weight: 0 },
   ];
 
+  // Found by the #14077 guard, not reported in the issue: Cursor carries no
+  // `claude-4.6-opus-*` at all — that generation is sonnet-only there, and opus
+  // lives under `claude-opus-5-*`. The sibling sonnet entry below resolves, which
+  // is why this one went unnoticed.
   const PAID_PREMIUM_PRESET_MODELS = [
-    { model: "cu/claude-4.6-opus-high", weight: 0 },
+    { model: "cu/claude-opus-5-high", weight: 0 },
     { model: "antigravity/claude-sonnet-4-6", weight: 0 },
     { model: "cu/claude-4.6-sonnet-high", weight: 0 },
     { model: "antigravity/gemini-pro-agent", weight: 0 },
@@ -2973,6 +3115,10 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
       strategy,
     };
 
+    // When editing an existing combo from the dashboard form, synchronize allowedProviders
+    // and clear legacy family restrictions so adding steps across providers never triggers COMBO_008
+    Object.assign(saveData, computeAllowedRestrictionSync(isEdit, combo, models));
+
     // Per-combo description (#5005). Free-text, optional, persisted in combo data.
     if (description.trim()) {
       saveData.description = description.trim();
@@ -2990,12 +3136,12 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
       if (config.concurrencyPerModel !== undefined)
         configToSave.concurrencyPerModel = config.concurrencyPerModel;
       if (config.queueTimeoutMs !== undefined) configToSave.queueTimeoutMs = config.queueTimeoutMs;
-      if (config.stickyRoundRobinLimit !== undefined)
-        configToSave.stickyRoundRobinLimit = config.stickyRoundRobinLimit;
     }
     if (strategy === "weighted" && config.stickyWeightedLimit !== undefined) {
       configToSave.stickyWeightedLimit = config.stickyWeightedLimit;
     }
+    persistStickyRoundRobinLimit(strategy, configToSave, config);
+    persistConnectionAwareExpansion(strategy, configToSave, config);
     if (
       usesIntelligentBuilderStage &&
       !isExpertMode &&
@@ -3994,34 +4140,12 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
                         className="w-full text-xs py-1.5 px-2 rounded border border-black/10 dark:border-white/10 bg-transparent focus:border-primary focus:outline-none"
                       />
                     </div>
-                    <div>
-                      <FieldLabelWithHelp
-                        label={getI18nOrFallback(t, "targetTimeout", "Target timeout (seconds)")}
-                        help={getI18nOrFallback(
-                          t,
-                          "advancedHelp.targetTimeoutMs",
-                          ADVANCED_FIELD_HELP_FALLBACK.targetTimeoutMs
-                        )}
-                        showHelp={!isExpertMode}
-                        htmlFor="combo-target-timeout-ms"
-                      />
-                      <input
-                        id="combo-target-timeout-ms"
-                        type="number"
-                        min="1"
-                        max="86400"
-                        step="1"
-                        value={msToOptionalSecondsInput(config.targetTimeoutMs)}
-                        placeholder={getI18nOrFallback(t, "inheritRequestTimeout", "inherit")}
-                        onChange={(e) =>
-                          setConfig({
-                            ...config,
-                            targetTimeoutMs: secondsInputToOptionalMs(e.target.value),
-                          })
-                        }
-                        className="w-full text-xs py-1.5 px-2 rounded border border-black/10 dark:border-white/10 bg-transparent focus:border-primary focus:outline-none"
-                      />
-                    </div>
+                    <ComboTimeoutFields
+                      config={config}
+                      setConfig={setConfig}
+                      t={t}
+                      showHelp={!isExpertMode}
+                    />
                   </div>
                   <div className="grid grid-cols-2 gap-2 pt-2 border-t border-black/5 dark:border-white/5">
                     <div className="col-span-2">
@@ -4211,33 +4335,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
                           className="w-full text-xs py-1.5 px-2 rounded border border-black/10 dark:border-white/10 bg-transparent focus:border-primary focus:outline-none"
                         />
                       </div>
-                      <div className="col-span-2">
-                        <FieldLabelWithHelp
-                          label={getI18nOrFallback(t, "stickyLimit", "Sticky Limit")}
-                          help={getI18nOrFallback(
-                            t,
-                            "advancedHelp.stickyLimit",
-                            ADVANCED_FIELD_HELP_FALLBACK.stickyLimit
-                          )}
-                          showHelp={!isExpertMode}
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          max="1000"
-                          value={config.stickyRoundRobinLimit ?? ""}
-                          placeholder={getI18nOrFallback(t, "stickyLimitInherit", "inherit")}
-                          onChange={(e) =>
-                            setConfig({
-                              ...config,
-                              stickyRoundRobinLimit: e.target.value
-                                ? Number(e.target.value)
-                                : undefined,
-                            })
-                          }
-                          className="w-full text-xs py-1.5 px-2 rounded border border-black/10 dark:border-white/10 bg-transparent focus:border-primary focus:outline-none"
-                        />
-                      </div>
                     </div>
                   )}
                   {strategy === "weighted" && (
@@ -4275,6 +4372,15 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, combo
                       </div>
                     </div>
                   )}
+                  <ComboRrLegibilityFields
+                    strategy={strategy}
+                    config={config}
+                    setConfig={setConfig}
+                    models={models}
+                    routingSettings={routingSettings}
+                    t={t}
+                    showHelp={!isExpertMode}
+                  />
                   <div className="grid grid-cols-1 gap-2 pt-2 border-t border-black/5 dark:border-white/5">
                     <div>
                       <FieldLabelWithHelp

@@ -41,6 +41,12 @@ is retained for controlled local use. `providers remove` requires `--yes` on a
 non-interactive terminal, and all five commands honor the active context or the
 global `--base-url`/`--api-key` options.
 
+Provider selectors reject ambiguous ID prefixes, names or provider names; use a
+full connection ID when several connections match. Create and edit commands read
+the saved connection back, and removal verifies that it is no longer readable.
+An import skips an existing provider/name pair. Imported entries cannot override
+the management endpoint, context or management credentials supplied to the CLI.
+
 For the one-time, hand-written base setup of the two richest integrations, see the
 per-tool deep dives:
 
@@ -132,6 +138,16 @@ are not presented as launchable targets.
 > There is also a richer plugin integration — `omniroute setup opencode` — which
 > installs `@omniroute/opencode-plugin`. They are different commands; the table
 > above documents `setup-opencode`.
+>
+> The plugin comes in two packages, one per OpenCode major, because the two
+> loaders expect different entrypoints:
+> `@omniroute/opencode-plugin` for OpenCode v1 and
+> `@omniroute/opencode-plugin-v2` for OpenCode v2. The v2 package is new
+> (`0.1.0`) and follows a host contract that is still moving, so it reads the
+> shape OpenCode seeds into the catalog draft rather than assuming one. Install
+> it by adding a `plugins` entry to `opencode.json`; `omniroute setup opencode`
+> still installs the v1 package. Options and the credential lookup order are in
+> the package README.
 
 ---
 

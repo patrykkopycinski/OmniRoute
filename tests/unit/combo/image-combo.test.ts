@@ -23,6 +23,7 @@ fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 
 const core = await import("@/lib/db/core.ts");
 const { createCombo } = await import("@/lib/db/combos");
+const { createProviderConnection } = await import("@/lib/db/providers");
 const { executeImageCombo } = await import("@omniroute/open-sse/services/imageCombo");
 
 type LogEntry = { level: string; tag: unknown; msg: unknown };
@@ -282,4 +283,129 @@ test("all error responses from executeImageCombo sanitize stack traces", async (
       `Scenario "${scenario.name}" does not leak stack traces`
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Success path — public response shape (#12268)
+// ---------------------------------------------------------------------------
+
+function buildCodexSSE(items: Array<Record<string, unknown>>): string {
+  const frames = items.map((item) => JSON.stringify({ type: "response.output_item.done", item }));
+  return frames.map((frame) => `event: response.output_item.done\ndata: ${frame}\n`).join("\n");
+}
+
+test("combo success keeps the OpenAI {created, data} wrapper and Codex defaults to b64_json (#12268)", async () => {
+  // Codex CLI hardcodes the model name `gpt-image-2`; a combo is what lets it
+  // reach a codex target. The combo response must match the direct-model
+  // response shape byte-for-byte or the client aborts while decoding `created`.
+  await createProviderConnection({
+    provider: "codex",
+    authType: "apikey",
+    apiKey: "codex-token",
+    name: "codex-image-combo",
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: {},
+  });
+  await createCombo({
+    name: "gpt-image-2",
+    strategy: "priority",
+    models: ["codex/gpt-5.6-sol"],
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      buildCodexSSE([
+        {
+          type: "image_generation_call",
+          id: "ig_combo_1",
+          status: "completed",
+          revised_prompt: "a green tree icon",
+          result: "aVZCT1J3MEtHZ28=",
+        },
+      ]),
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    );
+
+  try {
+    const log = createLog();
+    const response = await executeImageCombo(
+      "gpt-image-2",
+      { model: "gpt-image-2", prompt: "a green tree icon, white background, minimal flat" },
+      createMockAuth(),
+      Date.now(),
+      log
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.ok(!Array.isArray(body), "combo path must not return a bare array");
+    assert.equal(typeof body.created, "number");
+    assert.ok(Array.isArray(body.data));
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0].b64_json, "aVZCT1J3MEtHZ28=");
+    assert.equal(body.data[0].url, undefined);
+    assert.equal(body.data[0].revised_prompt, "a green tree icon");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Parallel fan-out — a slow failing first target must not block a healthy one
+// ---------------------------------------------------------------------------
+
+test("runs image targets concurrently: slow failing first target does not block fast healthy second target", async () => {
+  await createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    apiKey: "sk-test",
+    name: "image-combo-openai",
+    isActive: true,
+    testStatus: "active",
+    providerSpecificData: {},
+  });
+  // gpt-image-2 is the priority (first) target; gpt-image-1-mini is the sibling.
+  await createCombo({
+    name: "parallel-img-combo",
+    strategy: "priority",
+    models: ["openai/gpt-image-2", "openai/gpt-image-1-mini"],
+  });
+
+  const log = createLog();
+  const start = Date.now();
+
+  const response = await executeImageCombo(
+    "parallel-img-combo",
+    { model: "parallel-img-combo", prompt: "a cat", n: 1 },
+    createMockAuth(),
+    Date.now(),
+    log,
+    {
+      generateImage: async ({ body: b }: { body: { model?: string } }) => {
+        const model = String(b?.model ?? "");
+        if (model.includes("gpt-image-2")) {
+          // Priority target plays the starved provider: it burns ~300ms and
+          // fails, while the sibling answers in a few ms.
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return { success: false, status: 429, error: "slow provider unavailable" };
+        }
+        return {
+          success: true,
+          status: 200,
+          data: { created: 1, data: [{ url: "https://ok.example/x.png" }] },
+        };
+      },
+    }
+  );
+
+  const elapsed = Date.now() - start;
+
+  assert.equal(response.status, 200, "healthy sibling wins over slow first target");
+  const payload = await response.json();
+  assert.equal(payload.data[0].url, "https://ok.example/x.png");
+  assert.equal(response.headers.get("X-OmniRoute-Provider"), "openai");
+  // Finished well before the slow target's 300ms failure — proof of flush,
+  // not sequential waiting.
+  assert.ok(elapsed < 250, `parallel fan-out finished in ${elapsed}ms, expected << 300ms`);
 });

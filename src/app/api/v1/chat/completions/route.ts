@@ -5,6 +5,10 @@ import { handleChat } from "@/sse/handlers/chat";
 import { generateRequestId } from "@/shared/utils/requestId";
 import { resolveIncomingCorrelationId } from "@/shared/utils/correlationPreserve.ts";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
+import {
+  handleSelfHostedCompletions,
+  isSelfHostedEntryConfigured,
+} from "@omniroute/open-sse/services/selfHostedEntry.ts";
 import { initTranslators } from "@omniroute/open-sse/translator/index.ts";
 import { createInjectionGuard } from "@/middleware/promptInjectionGuard";
 import { acceptHeaderForcesStream } from "@omniroute/open-sse/utils/aiSdkCompat.ts";
@@ -14,6 +18,7 @@ import {
   OPENAI_STARTUP_FRAME,
   withEarlyStreamKeepalive,
 } from "@omniroute/open-sse/utils/earlyStreamKeepalive";
+import { createStreamDeadlineSignal } from "@omniroute/open-sse/utils/streamDeadlineSignal";
 import { resolveKeepaliveThreshold } from "@omniroute/open-sse/utils/keepaliveThreshold";
 import {
   admitChatRequest,
@@ -28,6 +33,7 @@ import {
   withCompressionHeaderEcho,
 } from "@/shared/utils/compressionHeaderEcho";
 import { resolveModelAliasWithSeedFallbackOnBody } from "@/lib/modelAliasResolver";
+import { enforceApiKeyPolicy } from "@/shared/utils/apiKeyPolicy";
 import {
   assertRuntimeModelProviderAvailable,
   isRuntimeProviderRetirementError,
@@ -36,6 +42,7 @@ import {
   assertCommonChatGptWebModelAvailable,
   isCommonChatGptWebRetirementError,
 } from "@/shared/constants/chatgptWebRetirement";
+import { ensureSemanticCacheDbBridge } from "@/lib/cache/semanticCacheDbBridge";
 
 let initPromise = null;
 
@@ -48,6 +55,7 @@ const injectionGuard = createInjectionGuard({ logger: null });
  */
 function ensureInitialized() {
   if (!initPromise) {
+    ensureSemanticCacheDbBridge();
     initPromise = Promise.resolve(initTranslators()).then(() => {
       console.log("[SSE] Translators initialized");
     });
@@ -112,6 +120,8 @@ export async function POST(request) {
   // Reserve heavyweight capacity atomically and ingest the body with a hard byte bound
   // BEFORE JSON parsing. Missing or dishonest Content-Length values cannot bypass
   // the actual-byte limit. Capacity exhaustion is retryable rather than process-fatal.
+  // The slow-stream deadline is created only after the route knows this is a streaming
+  // request; non-streaming calls keep the framework Request object untouched.
   const sessionId = resolveSessionId(request);
   const admissionResult = await admitChatRequest(request, {
     sessionId,
@@ -121,7 +131,7 @@ export async function POST(request) {
   const admission = admissionResult;
   request = admission.request;
   const finishAdmission = (response: Response) =>
-    releaseChatAdmissionWhenDone(response, admission.lease);
+    releaseChatAdmissionWhenDone(response, admission.lease, { signal: request.signal });
 
   try {
     // One-line marker for diagnosing 413 / Server-Action interceptions.
@@ -156,6 +166,35 @@ export async function POST(request) {
             return finishAdmission(
               errorResponse(400, `${field}: ${issue?.message ?? "Invalid request"}`)
             );
+          }
+
+          // Self-hosted unified entry (D4 — RIC-738): when a provider config is
+          // present, divert BEFORE the cloud-only model retirement/alias checks so
+          // self-hosted model ids (`local/llama3`, `ollama/qwen2`, ...) never trip
+          // cloud-peer 410s or alias rewrites. Config-absent requests proceed to the
+          // normal cloud pipeline unchanged.
+          //
+          // #14485: the divert must still run the same key-policy enforcement as
+          // the normal cloud pipeline (enforceApiKeyPolicy, called deep inside
+          // handleChat() on that path) — otherwise a disabled/rate-limited/
+          // schedule-restricted OmniRoute API key reaches the self-hosted upstream
+          // unchecked. Run it ONLY when the divert is configured (it then answers
+          // every request): the cloud path already runs it once in handleChat(),
+          // and a second run would consume the rate-limit window twice, apply
+          // throttleDelayMs twice and check allowedModels before alias resolution.
+          if (isSelfHostedEntryConfigured()) {
+            const keyPolicy = await enforceApiKeyPolicy(
+              request,
+              typeof parsedBody.model === "string" ? parsedBody.model : null
+            );
+            if (keyPolicy.rejection) {
+              return finishAdmission(keyPolicy.rejection);
+            }
+
+            const selfHostedResponse = await handleSelfHostedCompletions(request, parsedBody);
+            if (selfHostedResponse) {
+              return finishAdmission(selfHostedResponse);
+            }
           }
 
           try {
@@ -252,20 +291,27 @@ export async function POST(request) {
 
     if (wantsStreaming) {
       const reqId = callerCorrelationId ?? generateRequestId();
+      const {
+        signal: routeDeadlineSignal,
+        deadlineController: routeDeadlineController,
+      } = createStreamDeadlineSignal(request.signal);
       // Wrap the real handler response, not the synthetic early-keepalive response. If the
       // client cancels while handleChat is still pending, earlyStreamKeepalive will cancel the
       // eventual handler body; only that confirmed cleanup releases heavyweight capacity.
       const handlerResponse = releaseChatAdmissionAfterHandler(
-        handleChat(request, null, parsedBody, reqId),
-        admission.lease
+        handleChat(request, null, parsedBody, reqId, routeDeadlineSignal),
+        admission.lease,
+        { signal: routeDeadlineSignal }
       );
       const streamedResponse = await withEarlyStreamKeepalive(handlerResponse, {
-        signal: request.signal,
+        signal: routeDeadlineSignal,
         thresholdMs: resolveKeepaliveThreshold(parsedBody?.model),
         keepaliveFrame: OPENAI_KEEPALIVE_FRAME,
         startupFrame: OPENAI_STARTUP_FRAME,
         errorFrame: OPENAI_CHAT_ERROR_FRAME,
+        correlationId: reqId,
         extraHeaders: { "X-Correlation-Id": reqId },
+        deadlineController: routeDeadlineController,
       });
       return withCompressionHeaderEcho(streamedResponse, compressionRequestHeader);
     }

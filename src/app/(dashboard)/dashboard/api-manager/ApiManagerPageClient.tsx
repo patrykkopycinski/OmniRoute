@@ -31,8 +31,15 @@ import { UsageLimitSettings } from "./components/UsageLimitSettings";
 import { ChaosModeAccessToggle } from "./components/ChaosModeAccessToggle";
 import { BypassProviderQuotaToggle } from "./components/BypassProviderQuotaToggle";
 import { ApiKeyCompressionToggle } from "./components/ApiKeyCompressionToggle";
+import { ApiKeyAutoCombosToggle } from "./components/ApiKeyAutoCombosToggle";
+import { ApiKeyCatalogScopeSelect } from "./components/ApiKeyCatalogScopeSelect";
+import type { CatalogScope } from "./components/ApiKeyCatalogScopeSelect";
+import { AllowedCombosSection } from "./components/AllowedCombosSection";
 import ProviderModelPermissionList from "./components/ProviderModelPermissionList";
-import ReasoningRoutingRules from "@/shared/components/ReasoningRoutingRules";
+import ProviderConnectionPermissionList, {
+  type ProviderConnection,
+} from "./components/ProviderConnectionPermissionList";
+import RoutingEntryLink from "@/shared/components/routing/RoutingEntryLink";
 import { ALL_COMBOS_ACCESS_RULE } from "@/shared/constants/comboAccess";
 
 // Constants for validation
@@ -135,6 +142,8 @@ interface ApiKey {
   allowedEndpoints?: string[];
   streamDefaultMode?: StreamDefaultMode;
   compressionEnabled?: boolean;
+  allowAutoCombos?: boolean;
+  catalogScope?: CatalogScope;
   disableNonPublicModels?: boolean;
   allowUsageCommand?: boolean;
   chaosModeEnabled?: boolean;
@@ -143,13 +152,6 @@ interface ApiKey {
   weeklyUsageLimitUsd?: number | null;
   allowedQuotas?: string[] | null;
   createdAt: string;
-}
-
-interface ProviderConnection {
-  id: string;
-  name: string;
-  provider: string;
-  isActive: boolean;
 }
 
 interface KeyUsageStats {
@@ -810,6 +812,8 @@ export default function ApiManagerPageClient() {
     allowedEndpoints: string[],
     streamDefaultMode: StreamDefaultMode,
     compressionEnabled: boolean,
+    allowAutoCombos: boolean,
+    catalogScope: CatalogScope,
     disableNonPublicModels: boolean,
     allowUsageCommand: boolean,
     usageLimitEnabled: boolean,
@@ -887,6 +891,8 @@ export default function ApiManagerPageClient() {
           allowedEndpoints,
           streamDefaultMode,
           compressionEnabled,
+          allowAutoCombos,
+          catalogScope,
           disableNonPublicModels,
           allowUsageCommand,
           usageLimitEnabled,
@@ -947,8 +953,11 @@ export default function ApiManagerPageClient() {
   }, [modelsByProvider, debouncedSearchModel]);
 
   if (loading) {
+    // The skeleton cards are aria-hidden, so without this status wrapper the page
+    // has no accessible content at all until /api/keys settles (#12066).
     return (
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-8" role="status" aria-live="polite" aria-busy="true">
+        <span className="sr-only">{tc("loading")}</span>
         <CardSkeleton />
         <CardSkeleton />
       </div>
@@ -1008,6 +1017,8 @@ export default function ApiManagerPageClient() {
           {t("createKey")}
         </Button>
       </div>
+
+      <RoutingEntryLink />
 
       {/* Filter Bar — shown when there are keys */}
       {keys.length > 0 && (
@@ -1732,6 +1743,8 @@ const PermissionsModal = memo(function PermissionsModal({
     allowedEndpoints: string[],
     streamDefaultMode: StreamDefaultMode,
     compressionEnabled: boolean,
+    allowAutoCombos: boolean,
+    catalogScope: CatalogScope,
     disableNonPublicModels: boolean,
     allowUsageCommand: boolean,
     usageLimitEnabled: boolean,
@@ -1821,6 +1834,8 @@ const PermissionsModal = memo(function PermissionsModal({
   const [compressionEnabled, setCompressionEnabled] = useState(
     apiKey?.compressionEnabled !== false
   );
+  const [allowAutoCombos, setAllowAutoCombos] = useState(apiKey?.allowAutoCombos !== false);
+  const [catalogScope, setCatalogScope] = useState<CatalogScope>(apiKey?.catalogScope ?? "all");
   const [nameError, setNameError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedConnections, setSelectedConnections] = useState<string[]>(initialConnections);
@@ -1939,18 +1954,6 @@ const PermissionsModal = memo(function PermissionsModal({
     [allowAllCombos]
   );
 
-  const handleToggleConnection = useCallback(
-    (connectionId: string) => {
-      if (allowAllConnections) return;
-      setSelectedConnections((prev) =>
-        prev.includes(connectionId)
-          ? prev.filter((c) => c !== connectionId)
-          : [...prev, connectionId]
-      );
-    },
-    [allowAllConnections]
-  );
-
   const handleToggleEndpoint = useCallback(
     (categoryId: string) => {
       if (allowAllEndpoints) return;
@@ -2038,6 +2041,8 @@ const PermissionsModal = memo(function PermissionsModal({
       allowAllEndpoints ? [] : selectedEndpoints,
       streamDefaultMode,
       compressionEnabled,
+      allowAutoCombos,
+      catalogScope,
       disableNonPublicModels,
       usageCommandEnabled,
       usageLimitEnabled,
@@ -2078,6 +2083,8 @@ const PermissionsModal = memo(function PermissionsModal({
     selectedEndpoints,
     streamDefaultMode,
     compressionEnabled,
+    allowAutoCombos,
+    catalogScope,
     disableNonPublicModels,
     usageCommandEnabled,
     usageLimitEnabled,
@@ -2164,7 +2171,7 @@ const PermissionsModal = memo(function PermissionsModal({
           </div>
         )}
 
-        {apiKey?.id && <ReasoningRoutingRules apiKeyId={apiKey.id} />}
+        {apiKey?.id && <RoutingEntryLink apiKeyId={apiKey.id} />}
 
         {/* Access Mode Toggle */}
         <div className="flex gap-2 p-1 bg-surface rounded-lg">
@@ -2547,6 +2554,13 @@ const PermissionsModal = memo(function PermissionsModal({
           enabled={compressionEnabled}
           onToggle={() => setCompressionEnabled((prev) => !prev)}
         />
+
+        <ApiKeyAutoCombosToggle
+          enabled={allowAutoCombos}
+          onToggle={() => setAllowAutoCombos((prev) => !prev)}
+        />
+
+        <ApiKeyCatalogScopeSelect value={catalogScope} onChange={setCatalogScope} />
 
         {/* Ban Toggle (SECURITY) */}
         <div className="flex items-start justify-between gap-3 p-3 rounded-lg border border-red-500/20 bg-red-500/5">
@@ -2961,139 +2975,27 @@ const PermissionsModal = memo(function PermissionsModal({
                   : t("restrictedToConnections", { count: selectedConnections.length })}
             </p>
             {!allowAllConnections && (
-              <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-                {Object.entries(
-                  allConnections.reduce<Record<string, ProviderConnection[]>>((acc, conn) => {
-                    const p = conn.provider || "Other";
-                    if (!acc[p]) acc[p] = [];
-                    acc[p].push(conn);
-                    return acc;
-                  }, {})
-                )
-                  .sort(([a], [b]) => compareTr(a, b))
-                  .map(([provider, conns]) => (
-                    <div key={provider}>
-                      <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wider px-1 py-0.5">
-                        {provider}
-                      </p>
-                      {conns.map((conn) => {
-                        const isSelected = selectedConnections.includes(conn.id);
-                        return (
-                          <button
-                            key={conn.id}
-                            onClick={() => handleToggleConnection(conn.id)}
-                            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-all ${
-                              isSelected
-                                ? "bg-primary/10 text-primary"
-                                : "text-text-muted hover:bg-surface/50 hover:text-text-main"
-                            }`}
-                          >
-                            <div
-                              className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
-                                isSelected ? "bg-primary border-primary" : "border-border"
-                              }`}
-                            >
-                              {isSelected && (
-                                <span className="material-symbols-outlined text-white text-[10px]">
-                                  check
-                                </span>
-                              )}
-                            </div>
-                            <span className="truncate flex-1">
-                              {conn.name || conn.id.slice(0, 8)}
-                            </span>
-                            {!conn.isActive && (
-                              <span className="text-[9px] text-red-400 shrink-0">
-                                {tc("inactive")}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
-              </div>
+              <ProviderConnectionPermissionList
+                connections={allConnections}
+                selectedConnections={selectedConnections}
+                onSelectionChange={setSelectedConnections}
+              />
             )}
           </div>
         )}
 
         {/* Allowed Combos Section */}
-        {allCombos.length > 0 && (
-          <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-text-main">{t("allowedCombos")}</p>
-              <div className="flex gap-1 p-0.5 bg-surface rounded-md">
-                <button
-                  onClick={() => {
-                    setAllowAllCombos(true);
-                    setSelectedCombos([]);
-                  }}
-                  className={`px-2 py-1 rounded text-xs font-medium transition-all ${
-                    allowAllCombos
-                      ? "bg-primary text-white"
-                      : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5"
-                  }`}
-                >
-                  {tc("all")}
-                </button>
-                <button
-                  onClick={() => setAllowAllCombos(false)}
-                  className={`px-2 py-1 rounded text-xs font-medium transition-all ${
-                    !allowAllCombos
-                      ? "bg-primary text-white"
-                      : "text-text-muted hover:bg-black/5 dark:hover:bg-white/5"
-                  }`}
-                >
-                  {t("restrict")}
-                </button>
-              </div>
-            </div>
-            <p className="text-xs text-text-muted">
-              {allowAllCombos
-                ? t("allCombosAllowed")
-                : t("restrictedComboCount", { count: selectedCombos.length })}
-            </p>
-            {!allowAllCombos && (
-              <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-                {allCombos
-                  .slice()
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((combo) => {
-                    const isSelected = selectedCombos.includes(combo.name);
-                    return (
-                      <button
-                        key={combo.id || combo.name}
-                        onClick={() => handleToggleCombo(combo.name)}
-                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-all ${
-                          isSelected
-                            ? "bg-primary/10 text-primary"
-                            : "text-text-muted hover:bg-surface/50 hover:text-text-main"
-                        }`}
-                      >
-                        <div
-                          className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
-                            isSelected ? "bg-primary border-primary" : "border-border"
-                          }`}
-                        >
-                          {isSelected && (
-                            <span className="material-symbols-outlined text-white text-[10px]">
-                              check
-                            </span>
-                          )}
-                        </div>
-                        <span className="truncate flex-1">{combo.name}</span>
-                        {Array.isArray(combo.models) && (
-                          <span className="text-[10px] text-text-muted shrink-0">
-                            {combo.models.length} models
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-              </div>
-            )}
-          </div>
-        )}
+        <AllowedCombosSection
+          allCombos={allCombos}
+          allowAllCombos={allowAllCombos}
+          selectedCombos={selectedCombos}
+          onAllowAll={(preservedRules) => {
+            setAllowAllCombos(true);
+            setSelectedCombos(preservedRules);
+          }}
+          onRestrict={() => setAllowAllCombos(false)}
+          onToggleCombo={handleToggleCombo}
+        />
 
         {/* Allowed Endpoints Section */}
         <div className="flex flex-col gap-2 p-3 rounded-lg border border-border bg-surface/40">

@@ -105,7 +105,7 @@ Resolves the request to a concrete `(provider, model, account, credentials)` tup
 
 For `auto/*` models, this stage also:
 
-- Runs the **15-factor scoring** algorithm (`services/autoCombo/`)
+- Runs the **16-factor scoring** algorithm (`services/autoCombo/`)
 - Selects a `provider+model` pair based on health, cost, latency, etc.
 
 ### Stage 2: Translate (translator/)
@@ -245,14 +245,14 @@ Supports **19 routing strategies** (see `src/shared/constants/routingStrategies.
 | `reset-window`      | Reset window-based routing                                                |
 | `headroom`          | Most remaining quota headroom first                                       |
 | `strict-random`     | Truly uniform (no quality weighting)                                      |
-| `auto`              | Use 15-factor scoring (`autoCombo/`)                                      |
+| `auto`              | Use 16-factor scoring (`autoCombo/`)                                      |
 | `lkgp`              | Last known good provider first                                            |
 | `context-optimized` | Best for long-context requests                                            |
 | `fusion`            | Fan out to a panel in parallel, then synthesize via a judge (`fusion.ts`) |
 
 ### base.ts (1170 LOC)
 
-The **abstract executor** that all 101 executors extend. It contains:
+The **abstract executor** that all 107 executors extend. It contains:
 
 - `buildUrl()` — default URL construction (subclasses override for custom)
 - `buildHeaders()` — default headers (auth, content-type)
@@ -280,7 +280,7 @@ Services are **focused, single-purpose modules** that handlers compose. The big 
 ### Routing & Combo
 
 - `combo.ts` — entry point for combo-routed requests
-- `services/autoCombo/` — 15-factor scoring, 8 auto routing strategies
+- `services/autoCombo/` — 16-factor scoring, 8 auto routing strategies
 - `wildcardRouter.ts` — matches wildcard routes (`gpt-*`)
 - `modelFamilyFallback.ts` — T5 intra-family fallback
 
@@ -570,7 +570,7 @@ The routing engine has strict performance budgets:
 - [ARCHITECTURE.md](../architecture/ARCHITECTURE.md) — high-level architecture
 - [CODEBASE_DOCUMENTATION.md](../architecture/CODEBASE_DOCUMENTATION.md) — engineering reference
 - [REPOSITORY_MAP.md](../architecture/REPOSITORY_MAP.md) — directory-by-directory
-- [AUTO-COMBO.md](../routing/AUTO-COMBO.md) — 15-factor scoring
+- [AUTO-COMBO.md](../routing/AUTO-COMBO.md) — 16-factor scoring
 - [MCP-SERVER.md](./MCP-SERVER.md) — MCP server
 - [A2A-SERVER.md](./A2A-SERVER.md) — A2A server
 - Source: `open-sse/` (400+ files, ~143K LOC)

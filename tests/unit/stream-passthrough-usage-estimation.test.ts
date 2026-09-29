@@ -34,6 +34,7 @@ test("passthrough no fake: tool_only contentLength==0 -> no estimate (tool_calls
 
 import { createSSEStream } from "../../open-sse/utils/stream.ts";
 
+
 function parseSSEUsage(sseText: string): unknown[] {
   return sseText
     .split("\n\n")
@@ -89,7 +90,7 @@ test("passthrough SSE: finish stop without usage + include_usage:true -> emits u
   assert.ok(typeof usage.completion_tokens === "number" && usage.completion_tokens > 0);
 });
 
-test("passthrough SSE: trailing choices:[] valid after estimated finish -> trailing is dropped (estimated wins)", async () => {
+test("passthrough SSE: real trailing choices:[] usage is forwarded; no estimate is emitted (real wins)", async () => {
   const body = { model: "m", messages: [{ role: "user", content: "hi" }], stream: true, stream_options: { include_usage: true } };
   const stream = createSSEStream({
     mode: "passthrough" as const,
@@ -111,17 +112,23 @@ test("passthrough SSE: trailing choices:[] valid after estimated finish -> trail
   })();
   const enc = new TextEncoder();
   await writer.write(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "hello world" }, finish_reason: null }] })}\n\n`));
-  // finish without usage -> should estimate (injectedUsage=false at that point)
+  // finish without usage -> passes through untouched (estimate only happens at flush, and only if no usage ever arrives)
   await writer.write(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`));
-  // trailing choices:[] with valid usage 50ms after -> inside empty-choices block hasValid(emptyChoicesUsage)&&!injectedUsage is now false, so chunk is dropped (warn path)
+  // trailing choices:[] with valid usage -> forwarded verbatim (marks passthroughForwardedUsage, so flush skips the estimate)
   await writer.write(enc.encode(`data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 8, completion_tokens: 6, total_tokens: 14 } })}\n\n`));
   await writer.write(enc.encode("data: [DONE]\n\n"));
   await writer.close();
   const text = await readAll;
   const parsed = parseSSEUsage(text);
   const withUsage = parsed.filter((p: unknown) => (p as Record<string, unknown>).usage);
-  // With the guard, the trailing valid is dropped (estimated was already sent on finish). Without guard we would see 2 (double). We assert drop.
-  // If upstream ever sends real include_usage trailing, this documents the v1 tradeoff: estimated wins, valid is dropped.
-  assert.equal(withUsage.length, 1, `expected 1 usage (estimated, trailing dropped), got ${withUsage.length} — usages: ${JSON.stringify(withUsage.map((p) => (p as Record<string, unknown>).usage))}`);
-  assert.equal((withUsage[0] as Record<string, unknown> & { usage: Record<string, unknown> }).usage.estimated, true);
+  // v2 contract (#12151 follow-up): the upstream's REAL trailing usage block is forwarded
+  // and wins; the estimate exists only for upstreams that never report usage (emitted at
+  // flush). Exactly one usage block ever reaches the client — never two, never estimated
+  // when a real one arrived (the v1 "estimated wins" tradeoff was a billing regression).
+  assert.equal(withUsage.length, 1, `expected 1 usage (the real trailing block), got ${withUsage.length} — usages: ${JSON.stringify(withUsage.map((p) => (p as Record<string, unknown>).usage))}`);
+  const forwarded = (withUsage[0] as Record<string, unknown> & { usage: Record<string, unknown> }).usage;
+  assert.equal(forwarded.estimated, undefined);
+  assert.equal(forwarded.prompt_tokens, 8);
+  assert.equal(forwarded.completion_tokens, 6);
+  assert.equal(forwarded.total_tokens, 14);
 });

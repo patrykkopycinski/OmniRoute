@@ -20,6 +20,7 @@ export type RequestPipelinePayloads = {
   clientResponse?: JsonRecord;
   error?: JsonRecord;
   payloadRuleDiff?: JsonRecord;
+  toolLoop?: { legs: JsonRecord[] };
   streamChunks?: {
     provider?: string[];
     openai?: string[];
@@ -29,7 +30,12 @@ export type RequestPipelinePayloads = {
 
 type RequestLogger = {
   sessionPath: null;
-  logClientRawRequest: (endpoint: unknown, body: unknown, headers?: HeaderInput) => void;
+  logClientRawRequest: (
+    endpoint: unknown,
+    body: unknown,
+    headers?: HeaderInput,
+    effectiveInput?: unknown
+  ) => void;
   logRouteDecision: (decision: unknown) => void;
   logOpenAIRequest: (body: unknown) => void;
   logTargetRequest: (url: unknown, headers: HeaderInput, body: unknown) => void;
@@ -45,6 +51,7 @@ type RequestLogger = {
   appendConvertedChunk: (chunk: string) => void;
   logError: (error: unknown, requestBody?: unknown) => void;
   logPayloadRuleDiff: (entries: unknown[]) => void;
+  logToolLoopReceipt: (receipt: unknown) => void;
   getPipelinePayloads: () => RequestPipelinePayloads | null;
 };
 
@@ -71,6 +78,7 @@ const MAX_LOG_STRING_LENGTH = 64 * 1024;
 // existing plain-constant shape; CHAT_LOG_ARRAY_TAIL_ITEMS still overrides it.
 export const MAX_LOG_ARRAY_ITEMS = getChatLogArrayTailItems();
 const MAX_LOG_OBJECT_KEYS = 80;
+const MAX_TOOL_LOOP_LEGS = 4;
 
 function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   if (!headers) return {};
@@ -84,6 +92,7 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
   const sensitiveKeys = [
     "authorization",
     "x-api-key",
+    "apikey",
     "cookie",
     "token",
     "runtimekey",
@@ -103,7 +112,8 @@ function maskSensitiveHeaders(headers: HeaderInput): Record<string, unknown> {
       masked[key] = "[REDACTED]";
       continue;
     }
-    if (!sensitiveKeys.some((candidate) => lowerKey.includes(candidate))) {
+    const compactedKey = lowerKey.replace(/-/g, "");
+    if (!sensitiveKeys.some((candidate) => compactedKey.includes(candidate.replace(/-/g, "")))) {
       continue;
     }
 
@@ -279,7 +289,16 @@ function compactPipelinePayloads(
       continue;
     }
 
-    result[key as keyof RequestPipelinePayloads] = value;
+    if (key === "toolLoop" && value && typeof value === "object") {
+      const legs = (value as { legs?: unknown }).legs;
+      if (Array.isArray(legs) && legs.length > 0) {
+        result.toolLoop = { legs: legs as JsonRecord[] };
+      }
+      continue;
+    }
+
+    const payloadKey = key as Exclude<keyof RequestPipelinePayloads, "streamChunks" | "toolLoop">;
+    result[payloadKey] = value as JsonRecord;
   }
 
   return hasOwnValues(result) ? result : null;
@@ -382,6 +401,7 @@ export async function createRequestLogger(
       appendConvertedChunk: chunkMethods.appendConvertedChunk,
       logError() {},
       logPayloadRuleDiff() {},
+      logToolLoopReceipt() {},
       getPipelinePayloads() {
         return routeDecision ? { routeDecision } : null;
       },
@@ -395,12 +415,26 @@ export async function createRequestLogger(
   return {
     sessionPath: null,
 
-    logClientRawRequest(endpoint, body, headers = {}) {
+    logClientRawRequest(endpoint, body, headers = {}, effectiveInput) {
       payloads.clientRawRequest = {
         timestamp: new Date().toISOString(),
         endpoint,
         headers: maskSensitiveHeaders(headers),
         body: cloneBoundedForLog(body),
+        // The actual `input` this request dispatched with, captured AFTER
+        // OmniRoute's own previous_response_id reconstruction (see
+        // src/sse/handlers/chat.ts) -- `body` above is deliberately the
+        // pre-reconstruction raw client bytes (captureDeferredClientRawBody's
+        // whole point) and is NOT what got sent for a continued turn.
+        // resolvePreviousResponseState must chain off this field, not
+        // `body.input`: reading the raw pre-reconstruction input for a
+        // request that was itself a continuation compounds into progressively
+        // truncated history a few hops deep (live incident 2026-09-03,
+        // manifested as a malformed request with no leading system/user
+        // message rejected by the upstream provider).
+        ...(effectiveInput !== undefined
+          ? { effectiveInput: cloneBoundedForLog(effectiveInput) }
+          : {}),
       };
     },
 
@@ -458,6 +492,14 @@ export async function createRequestLogger(
         timestamp: new Date().toISOString(),
         entries: cloneBoundedForLog(entries) as unknown as JsonRecord,
       };
+    },
+
+    logToolLoopReceipt(receipt) {
+      const legs = payloads.toolLoop?.legs ?? [];
+      if (legs.length >= MAX_TOOL_LOOP_LEGS) return;
+      const cloned = cloneBoundedForLog(receipt);
+      if (!cloned || typeof cloned !== "object" || Array.isArray(cloned)) return;
+      payloads.toolLoop = { legs: [...legs, cloned as JsonRecord] };
     },
 
     getPipelinePayloads() {
