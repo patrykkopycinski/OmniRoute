@@ -300,6 +300,18 @@ export const FEATURE_FLAG_DEFINITIONS: FeatureFlagDefinition[] = [
 
   // ──────────────── Runtime (17) ────────────────
   {
+    key: "MODEL_ROUTER_INPROCESS",
+    label: "In-Process Tier Router",
+    description:
+      "Route requests sent to the virtual router model (default 'laya-router') through the input-aware tier classifier in the gateway itself, instead of the standalone laya-router reverse proxy. Off by default: with this flag off routing is unchanged and the virtual model is not resolved. Classifier endpoint via MODEL_ROUTER_CLASSIFY_URL (default http://127.0.0.1:20770/classify).",
+    descriptionI18nKey: "featureFlagModelRouterInprocessDescription",
+    category: "runtime",
+    defaultValue: "false",
+    type: "boolean",
+    requiresRestart: false,
+    warningLevel: "caution",
+  },
+  {
     key: "UNIVERSAL_CONTEXT_HANDOFF_ENABLED",
     label: "Universal Context Handoff",
     description:
