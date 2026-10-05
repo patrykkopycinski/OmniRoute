@@ -10,6 +10,10 @@ import { normalizeResponsesPreviousResponseIdMode } from "@omniroute/open-sse/ut
 import { FORMATS } from "@omniroute/open-sse/translator/formats.ts";
 import { resolveRoutingModel, RoutingModelOps } from "./resolveRoutingModel";
 import {
+  isModelRouterInprocessEnabled,
+  maybeApplyModelRouterTier,
+} from "../services/modelRouterTier";
+import {
   getProviderCredentialsWithQuotaPreflight,
   markAccountUnavailable,
   buildExhaustionOptions,
@@ -610,6 +614,25 @@ async function handleChatImplementation(
       if (body?.model !== modelStr) {
         body = { ...body, model: modelStr };
       }
+    }
+  }
+
+  // In-process tier router (MODEL_ROUTER_INPROCESS, default OFF): when enabled
+  // and the resolved model is the virtual router id (default "laya-router"),
+  // classify the request content and rewrite routing to the mapped named combo.
+  // This is the in-process equivalent of the standalone laya-router proxy's
+  // `X-Route-Model` rewrite: the classifier picks the TIER (a named combo from a
+  // closed set), the combo's own scorer picks the model. With the flag off this
+  // branch is not taken at all, so routing stays byte-identical to today.
+  if (isModelRouterInprocessEnabled()) {
+    const tierRouter = await maybeApplyModelRouterTier({ body, modelStr });
+    if (tierRouter.applied && tierRouter.model) {
+      log.debug(
+        "MODEL_ROUTER",
+        `tier router → ${tierRouter.model} (tier=${tierRouter.tier} conf=${(tierRouter.confidence ?? 0).toFixed(3)} fallback=${tierRouter.fallback} reason=${tierRouter.reason})`
+      );
+      modelStr = tierRouter.model;
+      body = { ...body, model: modelStr };
     }
   }
 
