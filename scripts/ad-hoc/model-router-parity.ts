@@ -9,8 +9,8 @@
  * Asserts, per frozen prompt: identical classifier input string, identical tier,
  * identical confidence, identical routed combo. Exits non-zero on any mismatch.
  *
- *   PARITY_URL=http://127.0.0.1:20771 node --import tsx/esm \
- *     scripts/ad-hoc/model-router-parity.ts
+ *   node --import tsx/esm \
+ *     scripts/ad-hoc/model-router-parity.ts [http://127.0.0.1:20771]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -21,7 +21,7 @@ import {
   selectTierCombo,
 } from "../../src/sse/services/modelRouterTier.ts";
 
-const base = process.env.PARITY_URL ?? "http://127.0.0.1:20771";
+const base = process.argv[2] ?? "http://127.0.0.1:20771";
 const fixture = path.resolve(process.cwd(), "tests/fixtures/model-router-parity-prompts.json");
 const prompts: Array<{ id: string; body: Record<string, unknown> }> = JSON.parse(
   fs.readFileSync(fixture, "utf8")
