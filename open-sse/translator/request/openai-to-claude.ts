@@ -7,7 +7,7 @@ import { sanitizeToolId } from "../helpers/schemaCoercion.ts";
 import { safeParseJSON } from "../helpers/jsonUtil.ts";
 import { applyKimiCodingThinking } from "../helpers/claudeHelper.ts";
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.ts";
-import { isAdaptiveThinkingOnly } from "../../../src/shared/constants/modelSpecs.ts";
+import { isAdaptiveThinkingOnly, getModelSpec } from "../../../src/shared/constants/modelSpecs.ts";
 import { fitThinkingToMaxTokens } from "./openai-to-claude/thinkingBudget.ts";
 import { enforceToolResultAdjacency } from "./openai-to-claude/toolResultAdjacency.ts";
 import { sanitizeToolResultId } from "./openai-to-claude/sanitizeToolResultId.ts";
@@ -184,6 +184,17 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
       ...(body.thinking.budget_tokens && { budget_tokens: body.thinking.budget_tokens }),
       ...(body.thinking.max_tokens && { max_tokens: body.thinking.max_tokens }),
     };
+    // Adaptive-only models (Opus 4.7+/5/5.5, Sonnet 5.5, Fable 5) reject a
+    // manual `thinking` object entirely; those flagged `rejectsThinkingDisabled`
+    // (5.5 family, Fable 5) also 400 on `type:"disabled"`. Drop it so the model
+    // keeps its adaptive default instead of failing upstream. Models that DO
+    // honor manual budgets (e.g. opus-4-8 with type:"enabled") keep theirs.
+    if (
+      body.thinking.type !== "enabled" &&
+      (isAdaptiveThinkingOnly(model) || getModelSpec(model)?.rejectsThinkingDisabled)
+    ) {
+      delete result.thinking;
+    }
   } else if (body.reasoning_effort) {
     // Convert OpenAI reasoning_effort to Claude thinking format (#627)
     // Clients like OpenCode send reasoning_effort via @ai-sdk/openai-compatible
@@ -428,7 +439,23 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
 
   // Tool choice
   if (body.tool_choice) {
-    result.tool_choice = convertOpenAIToolChoice(body.tool_choice);
+    const converted = convertOpenAIToolChoice(body.tool_choice);
+    // Adaptive-thinking Claude models (Opus 4.7+/5/5.5, Sonnet 5.5) reject a
+    // forced tool_choice ({type:"any"} / {type:"tool"}) with a 400 while
+    // thinking is adaptive. Drop the forced choice — the tools are still
+    // available; {type:"auto"} is always safe to forward.
+    const forcedType =
+      typeof converted === "string"
+        ? converted
+        : typeof converted?.type === "string"
+          ? converted.type
+          : "";
+    if (!(
+      (forcedType === CLAUDE_TOOL_CHOICE_REQUIRED || forcedType === "tool") &&
+      isAdaptiveThinkingOnly(model)
+    )) {
+      result.tool_choice = converted;
+    }
   }
 
   // response_format: inject JSON structured output instruction into system prompt.

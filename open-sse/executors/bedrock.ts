@@ -370,6 +370,23 @@ export function openAIToBedrockConverse(model, body) {
     payload.additionalModelRequestFields = request.additionalModelRequestFields;
   }
 
+  // Reasoning-effort mapping: Bedrock Converse has no `output_config.effort`.
+  // Map the OpenAI/Claude effort level onto Converse's
+  // additionalModelRequestFields.thinking.budgetTokens for thinking-capable
+  // Claude models (documented gap from the cache_control-400 audit). Levels
+  // below "medium" leave thinking unset so the model keeps its default.
+  const effort = request?.output_config?.effort ?? request.reasoning_effort;
+  if (typeof effort === "string" && !payload.additionalModelRequestFields?.thinking) {
+    const EFFORT_BUDGET_TOKENS = { medium: 10240, high: 32768, xhigh: 65536, max: 120000 };
+    const budget = EFFORT_BUDGET_TOKENS[String(effort).toLowerCase()];
+    if (budget) {
+      payload.additionalModelRequestFields = {
+        ...(payload.additionalModelRequestFields ?? {}),
+        thinking: { type: "enabled", budgetTokens: budget },
+      };
+    }
+  }
+
   return payload;
 }
 
