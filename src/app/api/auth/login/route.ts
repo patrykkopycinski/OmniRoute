@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getAuditRequestContext, logAuditEvent } from "@/lib/compliance/index";
 import { getCachedSettings } from "@/lib/db/settings";
-import { SignJWT } from "jose";
 import { cookies } from "next/headers";
 import {
   ensurePersistentManagementPasswordHash,
@@ -13,9 +12,17 @@ import {
 import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";
 import { loginSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
-import { checkLoginGuard, clearLoginAttempts, recordLoginFailure } from "@/server/auth/loginGuard";
+import {
+  beginLoginAttempt,
+  clearLoginAttempts,
+  endLoginAttempt,
+  recordLoginFailure,
+} from "@/server/auth/loginGuard";
 import { AUTHZ_HEADER_TRUSTED_PEER_IP } from "@/server/authz/headers";
-import { getDashboardJwtSecret } from "@/shared/utils/dashboardSessionToken";
+import {
+  getDashboardJwtSecret,
+  mintDashboardSessionToken,
+} from "@/shared/utils/dashboardSessionToken";
 import {
   getLoginLockoutKey,
   getLoginSourceScope,
@@ -35,6 +42,9 @@ export const authRouteInternals = {
 
 export async function POST(request: NextRequest) {
   const auditContext = getAuditRequestContext(request);
+  // Slot reserved by the guard while the password is verified; released on every exit.
+  let heldSlotKey: string | null | undefined;
+  let holdsSlot = false;
 
   try {
     // Fail-fast if JWT_SECRET is not configured
@@ -111,7 +121,7 @@ export async function POST(request: NextRequest) {
 
     const bruteForceEnabled = settings.bruteForceProtection !== false;
 
-    const guardCheck = checkLoginGuard(lockoutKey, { enabled: bruteForceEnabled });
+    const guardCheck = beginLoginAttempt(lockoutKey, { enabled: bruteForceEnabled });
     if (!guardCheck.allowed) {
       logAuditEvent({
         action: "auth.login.locked",
@@ -131,6 +141,9 @@ export async function POST(request: NextRequest) {
         }
       );
     }
+
+    holdsSlot = true;
+    heldSlotKey = lockoutKey;
 
     const passwordState = await ensurePersistentManagementPasswordHash({
       settings,
@@ -204,10 +217,7 @@ export async function POST(request: NextRequest) {
       const isHttpsRequest = forwardedProto === "https" || request.nextUrl?.protocol === "https:";
       const useSecureCookie = forceSecureCookie || isHttpsRequest;
 
-      const token = await new SignJWT({ authenticated: true })
-        .setProtectedHeader({ alg: "HS256" })
-        .setExpirationTime("30d")
-        .sign(getDashboardJwtSecret()!);
+      const token = await mintDashboardSessionToken(getDashboardJwtSecret()!);
 
       const cookieStore = await authRouteInternals.getCookieStore();
       cookieStore.set("auth_token", token, {
@@ -283,5 +293,7 @@ export async function POST(request: NextRequest) {
       },
     });
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  } finally {
+    if (holdsSlot) endLoginAttempt(heldSlotKey);
   }
 }

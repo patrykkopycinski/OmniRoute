@@ -142,6 +142,10 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/app/api/provider-nodes/[id]/route.ts": 1,
     "src/app/api/providers/[id]/chatgpt-web-codex-doctor/route.ts": 1,
     "src/app/api/providers/[id]/refresh-token/route.ts": 1,
+    // #15130: the connection test re-reads the row uncached right before its write so an
+    // operator disable that landed mid-probe is honored — a state re-read of the connection
+    // under test, never a connection selection (class C).
+    "src/app/api/providers/[id]/test/route.ts": 1,
     "src/app/api/providers/bulk/route.ts": 1,
     "src/app/api/providers/client/route.ts": 1,
     "src/app/api/providers/free-onboarding/route.ts": 2,
@@ -191,6 +195,10 @@ const EXPECTED: Record<InventoryKind, Record<string, number>> = {
     "src/lib/freeProviderRankings.ts": 1,
     "src/lib/guardrails/visionBridgeCredentials.ts": 2,
     "src/lib/kimi/tokenRefresh.ts": 1,
+    // Test&Add re-reads selected credentials behind the canonical auxiliary lease
+    // guard. Class B: FREE lease-capable connections remain usable; ACTIVE leases
+    // block the fresh lookup and every physical dispatch (behavioral runner/service tests).
+    "src/lib/modelValidation/runner.ts": 1,
     "src/lib/monitoring/providerHealthAutopilot.ts": 1,
     "src/lib/monitoring/providerHealthMatrix.ts": 1,
     "src/lib/oauth/connectionPersistence.ts": 1,
@@ -270,6 +278,7 @@ const CLASSIFICATION: Record<InventoryKind, Record<string, BypassClass>> = {
         "open-sse/services/tokenRefresh.ts",
         "src/app/api/translator/send/route.ts",
         "src/lib/credentialHealth/scheduler.ts",
+        "src/lib/modelValidation/runner.ts",
         "src/lib/providers/volcPlanAutoSyncBackfill.ts",
         "src/lib/providers/volcenginePlanBinding.ts",
         "src/lib/services/quotaAutoPing.ts",
@@ -382,6 +391,7 @@ test("managed request surfaces are fenced centrally or rejected before independe
     "src/app/api/translator/send/route.ts",
     "src/app/api/translator/translate/route.ts",
     "src/lib/api/modelTestRunner.ts",
+    "src/lib/modelValidation/runner.ts",
     "src/lib/services/quotaAutoPing.ts",
     "src/lib/usage/codexResetCredits.ts",
     "src/lib/usage/glmResetCards.ts",

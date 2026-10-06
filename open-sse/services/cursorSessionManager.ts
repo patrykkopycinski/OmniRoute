@@ -94,6 +94,8 @@ export type CursorSession = {
       /** Exact text Cursor asked to write, echoed back in WriteSuccess. */
       fileText: string;
       returnFileContentAfterWrite?: boolean;
+      /** The offset/limit of a held read that was forwarded to the client. */
+      readRange?: { offset?: number; limit?: number };
       /** Pattern Cursor searched for, echoed back in GrepSuccess. */
       pattern: string;
       outputMode?: string;
@@ -112,7 +114,12 @@ export type CursorSession = {
    * "cursor-agent frame too large (2.6 GB)" desyncs). Empty on cold open.
    */
   resumeBytes: Buffer;
+  // Usage already reported by earlier HTTP segments of this run. Cursor's
+  // turn_ended totals the whole run, so the resumed segment reports the rest.
+  reportedUsage?: CursorReportedUsage;
 };
+
+export type CursorReportedUsage = { prompt: number; completion: number; cached: number };
 
 export class CursorSessionManager {
   private sessions = new Map<string, CursorSession>();
@@ -253,7 +260,8 @@ export class CursorSessionManager {
                             builtin.execMsgId,
                             builtin.execId,
                             builtin.path,
-                            text
+                            text,
+                            builtin.readRange
                           )
                       : builtin.kind === "write"
                         ? writeFailed
