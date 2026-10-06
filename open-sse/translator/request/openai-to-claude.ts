@@ -12,6 +12,7 @@ import {
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.ts";
 import {
   getDefaultThinkingBudget,
+  getModelSpec,
   isAdaptiveThinkingOnly,
 } from "../../../src/shared/constants/modelSpecs.ts";
 import { fitThinkingToMaxTokens } from "./openai-to-claude/thinkingBudget.ts";
@@ -215,6 +216,12 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
         ...(body.thinking.budget_tokens && { budget_tokens: body.thinking.budget_tokens }),
         ...(body.thinking.max_tokens && { max_tokens: body.thinking.max_tokens }),
       };
+      // Adaptive-only models flagged `rejectsThinkingDisabled` (5.5 family, Fable 5)
+      // 400 on `thinking:{type:"disabled"}`. Drop only that shape so the model keeps
+      // its adaptive default; `adaptive` itself is forwarded unchanged (#10119 path above).
+      if (thinkingType === "disabled" && getModelSpec(model)?.rejectsThinkingDisabled) {
+        delete result.thinking;
+      }
     }
   } else if (body.reasoning_effort) {
     // Convert OpenAI reasoning_effort to Claude thinking format (#627)
@@ -468,7 +475,23 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
 
   // Tool choice
   if (body.tool_choice) {
-    result.tool_choice = convertOpenAIToolChoice(body.tool_choice);
+    const converted = convertOpenAIToolChoice(body.tool_choice);
+    // Adaptive-thinking Claude models (Opus 4.7+/5/5.5, Sonnet 5.5) reject a
+    // forced tool_choice ({type:"any"} / {type:"tool"}) with a 400 while
+    // thinking is adaptive. Drop the forced choice — the tools are still
+    // available; {type:"auto"} is always safe to forward.
+    const forcedType =
+      typeof converted === "string"
+        ? converted
+        : typeof converted?.type === "string"
+          ? converted.type
+          : "";
+    if (!(
+      (forcedType === CLAUDE_TOOL_CHOICE_REQUIRED || forcedType === "tool") &&
+      isAdaptiveThinkingOnly(model)
+    )) {
+      result.tool_choice = converted;
+    }
   }
 
   // response_format: inject JSON structured output instruction into system prompt.
