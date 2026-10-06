@@ -115,7 +115,7 @@ test("textFromContent handles strings and OpenAI/Anthropic parts", () => {
   assert.equal(textFromContent({ nope: 1 }), "");
 });
 
-test("buildRouterState leads with the last user turn, then newest non-system turns, system last", () => {
+test("buildRouterState uses user turns newest first only; assistant turns are never mixed in (sidecar HEAD e6fdc10 parity)", () => {
   const state = buildRouterState({
     system: "SYS",
     messages: [
@@ -124,7 +124,9 @@ test("buildRouterState leads with the last user turn, then newest non-system tur
       { role: "user", content: "LAST QUESTION" },
     ],
   });
-  assert.deepEqual(state.split("\n"), ["LAST QUESTION", "answer", "first question", "SYS"]);
+  // The YELLOW canary fix: only user turns (newest first), never assistant/tool
+  // output — tool output getting classified was the original misroute cause.
+  assert.deepEqual(state.split("\n"), ["LAST QUESTION", "first question", "SYS"]);
 });
 
 test("buildRouterState concatenates the system prompt without a separator (sidecar byte parity)", () => {

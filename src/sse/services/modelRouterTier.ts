@@ -27,6 +27,8 @@
  * module is never consulted and routing is byte-identical to today.
  */
 
+import { createHash } from "node:crypto";
+
 import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";
 import * as log from "../utils/logger";
 
@@ -55,6 +57,16 @@ export const DEFAULT_VIRTUAL_MODEL = "laya-router";
 export const DEFAULT_STATE_CHARS = 6000;
 export const DEFAULT_TIMEOUT_MS = 2500;
 
+/** Downgrade-only policy (MODEL_ROUTER_POLICY=downgrade). */
+export const DEFAULT_DOWNGRADE_FROM = "best-reasoning-paid";
+export const DEFAULT_DOWNGRADE_TO = "best-coding-paid";
+export const DEFAULT_DOWNGRADE_MIN_CONF = 0.9;
+export const DEFAULT_DOWNGRADE_TIMEOUT_MS = 800;
+
+/** Sticky session tier — verbatim port of the sidecar's `_sessions` LRU. */
+export const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
+export const SESSION_CAP = 512;
+
 export interface ModelRouterConfig {
   classifyUrl: string;
   virtualModel: string;
@@ -63,6 +75,14 @@ export interface ModelRouterConfig {
   minConfidence: Record<ModelRouterTier, number>;
   stateChars: number;
   timeoutMs: number;
+  /** `full` (virtual-model tier routing, default) | `downgrade` (downgrade-only). */
+  policy: "full" | "downgrade";
+  downgradeFrom: string;
+  downgradeTo: string;
+  downgradeMinConf: number;
+  downgradeTimeoutMs: number;
+  /** MODEL_ROUTER_SHADOW=1: classify + log the decision, never rewrite. */
+  shadow: boolean;
 }
 
 export interface ClassifyResult {
@@ -147,7 +167,33 @@ export function resolveModelRouterConfig(env: Env = process.env): ModelRouterCon
     minConfidence,
     stateChars: Math.floor(envNumber(env, "MODEL_ROUTER_STATE_CHARS", DEFAULT_STATE_CHARS)),
     timeoutMs: Math.floor(envNumber(env, "MODEL_ROUTER_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)),
+    policy: envString(env, "MODEL_ROUTER_POLICY", "full") === "downgrade" ? "downgrade" : "full",
+    downgradeFrom: envString(env, "MODEL_ROUTER_DOWNGRADE_FROM", DEFAULT_DOWNGRADE_FROM),
+    downgradeTo: envString(env, "MODEL_ROUTER_DOWNGRADE_TO", DEFAULT_DOWNGRADE_TO),
+    downgradeMinConf: envNumberAllowZero(
+      env,
+      "MODEL_ROUTER_DOWNGRADE_MIN_CONF",
+      DEFAULT_DOWNGRADE_MIN_CONF
+    ),
+    downgradeTimeoutMs: Math.floor(
+      envNumber(env, "MODEL_ROUTER_DOWNGRADE_TIMEOUT_MS", DEFAULT_DOWNGRADE_TIMEOUT_MS)
+    ),
+    shadow: envBool(env, "MODEL_ROUTER_SHADOW", false),
   };
+}
+
+function envBool(env: Env, key: string, fallback: boolean): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  return raw.trim() === "1" || raw.trim().toLowerCase() === "true";
+}
+
+/** Like envNumber but accepts 0 (a 0.0 confidence floor is meaningful). */
+function envNumberAllowZero(env: Env, key: string, fallback: number): number {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 /** Master switch. Default OFF unless overridden by env / DB / definition. */
@@ -178,6 +224,131 @@ export function textFromContent(content: unknown): string {
   return "";
 }
 
+/**
+ * Hermes injects retry nudges as user turns starting with '[System:'. Verbatim
+ * port of the sidecar's `_is_harness_nudge` (lstrip then prefix check).
+ */
+export function isHarnessNudge(text: string): boolean {
+  return text.replace(/^\s+/, "").startsWith("[System:");
+}
+
+/** Sticky session key: sha1 of the FIRST user turn's text, first 12 hex chars. */
+export function sessionKeyFromUsers(users: string[]): string {
+  return createHash("sha1").update(users[0]).digest("hex").slice(0, 12);
+}
+
+interface StickyEntry {
+  tier: ModelRouterTier;
+  ts: number;
+}
+
+/**
+ * In-process LRU mirror of the sidecar's `_sessions` (OrderedDict, TTL 6h,
+ * cap 512). Exported for tests; production code goes through classifyBodyLike.
+ */
+const sessions = new Map<string, StickyEntry>();
+
+export function __resetModelRouterSessionsForTests(): void {
+  sessions.clear();
+}
+
+export interface SessionClassification {
+  result: ClassifyResult;
+  session: string;
+  sticky: boolean;
+}
+
+/**
+ * Verbatim port of the sidecar's `classify_body` session logic (minus the model
+ * inference itself, which arrives as `fresh` from the HTTP classifier):
+ *  - session key = sha1(first user text)[:12]
+ *  - sticky when a stored tier exists AND (last user text < 40 chars OR the
+ *    fresh classification was confident OR the last turn is a nudge)
+ *  - sticky reuse returns the stored tier with fallback=false
+ *  - LRU with TTL 6h, cap 512
+ */
+export function classifyWithSessions(
+  body: ClassifierBodyLike,
+  fresh: ClassifyResult | null,
+  nowMs: number = Date.now()
+): SessionClassification {
+  const userTexts = (Array.isArray(body?.messages) ? body.messages : [])
+    .filter((m) => !!m && typeof m === "object")
+    .map((m) => {
+      const rec = m as Record<string, unknown>;
+      return rec.role === "user" ? textFromContent(rec.content) : null;
+    })
+    .filter((t): t is string => t !== null && t.trim() !== "" && !isHarnessNudge(t));
+
+  const state = buildRouterState(body);
+  if (userTexts.length === 0) {
+    if (!state.trim()) {
+      return {
+        result: { tier: "coding", confidence: 0, probabilities: [], fallback: true },
+        session: "",
+        sticky: false,
+      };
+    }
+    return {
+      result: fresh ?? { tier: "coding", confidence: 0, fallback: true },
+      session: "",
+      sticky: false,
+    };
+  }
+
+  const first = userTexts[0];
+  void first; // parity with the sidecar (session key derives from the first user text)
+  const last = userTexts[userTexts.length - 1];
+  const sess = sessionKeyFromUsers(userTexts);
+
+  // TTL sweep (lazy, same as the sidecar's per-call loop).
+  for (const [key, entry] of [...sessions.entries()]) {
+    if (nowMs - entry.ts >= SESSION_TTL_MS) sessions.delete(key);
+  }
+
+  const stored = sessions.get(sess);
+  const lastTurnIsNudge = (() => {
+    const msgs = Array.isArray(body?.messages) ? body.messages : [];
+    const lastMsg = msgs[msgs.length - 1];
+    return (
+      !!lastMsg &&
+      typeof lastMsg === "object" &&
+      (lastMsg as Record<string, unknown>).role === "user" &&
+      isHarnessNudge(textFromContent((lastMsg as Record<string, unknown>).content))
+    );
+  })();
+  const freshIsFallback = fresh === null || fresh.fallback;
+  const sticky = stored !== undefined && (last.length < 40 || freshIsFallback || lastTurnIsNudge);
+
+  let tier: ModelRouterTier;
+  let fallback: boolean;
+  if (sticky && stored) {
+    tier = stored.tier;
+    fallback = false;
+  } else {
+    tier = fresh?.tier ?? "coding";
+    fallback = fresh === null ? true : fresh.fallback;
+  }
+  sessions.delete(sess);
+  sessions.set(sess, { tier, ts: nowMs });
+  while (sessions.size > SESSION_CAP) {
+    const oldest = sessions.keys().next().value;
+    if (oldest === undefined) break;
+    sessions.delete(oldest);
+  }
+
+  return {
+    result: {
+      tier,
+      confidence: fresh?.confidence ?? 0,
+      probabilities: fresh?.probabilities,
+      fallback,
+    },
+    session: sess,
+    sticky,
+  };
+}
+
 export interface ClassifierBodyLike {
   messages?: unknown;
   system?: unknown;
@@ -204,24 +375,23 @@ export function buildRouterState(
       typeof m.role === "string" ? m.role : "",
       textFromContent(m.content),
     ])
-    .filter(([, text]) => text.trim() !== "");
+    .filter(([, text]) => text.trim() !== "")
+    // Harness-injected '[System:' user turns (retry nudges) are not real input.
+    .filter(([role, text]) => !(role === "user" && isHarnessNudge(text)));
 
-  let lastUser: number | null = null;
-  for (let i = turns.length - 1; i >= 0; i -= 1) {
-    if (turns[i][0] === "user") {
-      lastUser = i;
-      break;
-    }
-  }
-
-  const parts: string[] = [];
-  if (lastUser !== null) parts.push(turns[lastUser][1]);
-  for (let i = turns.length - 1; i >= 0; i -= 1) {
-    const role = turns[i][0];
-    if (i !== lastUser && role !== "system" && role !== "developer" && parts.length < 6) {
-      parts.push(turns[i][1]);
-    }
-  }
+  // User turns newest first, at most 6. Only when there are no user turns,
+  // fall back to non-system turns newest first (≤6). This is the sidecar's
+  // exact ordering — never mix assistant/tool turns into a user-led state.
+  const users = turns.filter(([role]) => role === "user").map(([, t]) => t);
+  const parts =
+    users.length > 0
+      ? [...users].reverse().slice(0, 6)
+      : turns
+          .slice()
+          .reverse()
+          .filter(([role]) => role !== "system" && role !== "developer")
+          .map(([, t]) => t)
+          .slice(0, 6);
 
   const systemText =
     textFromContent(body?.system) +
@@ -354,6 +524,8 @@ export interface MaybeApplyInput {
   modelStr: string | null | undefined;
   config?: ModelRouterConfig;
   fetchImpl?: typeof fetch;
+  /** Opt-out: x-omniroute-no-route: 1 skips routing for this request. */
+  noRoute?: boolean;
 }
 
 export interface MaybeApplyResult {
@@ -374,6 +546,57 @@ export interface MaybeApplyResult {
 export async function maybeApplyModelRouterTier(input: MaybeApplyInput): Promise<MaybeApplyResult> {
   const config = input.config ?? resolveModelRouterConfig();
   const model = typeof input.modelStr === "string" ? input.modelStr : null;
+
+  // ── Shadow mode (MODEL_ROUTER_SHADOW=1): classify + log, NEVER rewrite. ──
+  // Fire-and-forget: the request path does not await the classifier.
+  if (config.shadow) {
+    if (!input.noRoute) void shadowClassifyAndLog(input.body, model, config, input.fetchImpl);
+    return { applied: false, model };
+  }
+
+  // ── Downgrade-only policy (MODEL_ROUTER_POLICY=downgrade) ──
+  if (config.policy === "downgrade") {
+    if (input.noRoute) return { applied: false, model };
+    if (!model || model !== config.downgradeFrom) return { applied: false, model };
+
+    const state = buildRouterState(input.body, config.stateChars);
+    const t0 = Date.now();
+    const result = await classifyViaHttp(
+      state,
+      { ...config, timeoutMs: config.downgradeTimeoutMs },
+      input.fetchImpl
+    );
+    const ms = Date.now() - t0;
+    const downgraded =
+      result !== null &&
+      result.tier === "coding" &&
+      !result.fallback &&
+      result.confidence >= config.downgradeMinConf;
+    const would = downgraded ? config.downgradeTo : model;
+    logModelRouterDecision({
+      policy: "downgrade",
+      requested: model,
+      would,
+      tier: result?.tier ?? "coding",
+      confidence: result?.confidence ?? 0,
+      fb: result === null || result.fallback,
+      sticky: false,
+      sess: "",
+      ms,
+      applied: downgraded,
+    });
+    if (!downgraded) return { applied: false, model };
+    return {
+      applied: true,
+      model: config.downgradeTo,
+      tier: "coding",
+      confidence: result?.confidence ?? 0,
+      fallback: false,
+      reason: "classified",
+    };
+  }
+
+  // ── Full policy (default): virtual-model tier routing ──
   if (!model || model !== config.virtualModel) return { applied: false, model };
 
   const state = buildRouterState(input.body, config.stateChars);
@@ -395,4 +618,89 @@ export async function maybeApplyModelRouterTier(input: MaybeApplyInput): Promise
     fallback: selection.fallback,
     reason: selection.reason,
   };
+}
+
+export interface ModelRouterDecisionLog {
+  policy: "full" | "downgrade" | "shadow";
+  requested: string;
+  would: string;
+  tier: ModelRouterTier;
+  confidence: number;
+  fb: boolean;
+  sticky: boolean;
+  sess: string;
+  ms: number;
+  applied: boolean;
+}
+
+/**
+ * One MODEL_ROUTER_DECISION line per shadow decision. Kept as a separate
+ * exported function so tests can capture the exact rendered line.
+ */
+export function renderModelRouterDecisionLine(d: ModelRouterDecisionLog): string {
+  return (
+    `policy=${d.policy} requested=${d.requested} would=${d.would} tier=${d.tier} ` +
+    `conf=${d.confidence.toFixed(3)} fb=${d.fb} sticky=${d.sticky} sess=${d.sess} ` +
+    `ms=${d.ms.toFixed(1)} applied=${d.applied}`
+  );
+}
+
+export function logModelRouterDecision(d: ModelRouterDecisionLog): void {
+  log.info("MODEL_ROUTER_DECISION", renderModelRouterDecisionLine(d));
+}
+
+async function shadowClassifyAndLog(
+  body: MaybeApplyInput["body"],
+  requestedModel: string | null,
+  config: ModelRouterConfig,
+  fetchImpl?: typeof fetch
+): Promise<void> {
+  try {
+    const model = requestedModel ?? "";
+    const effectiveConfig: ModelRouterConfig =
+      config.policy === "downgrade" ? { ...config, timeoutMs: config.downgradeTimeoutMs } : config;
+    const relevant = config.policy === "downgrade" ? model === config.downgradeFrom : true;
+    if (!relevant) return; // other models pass through untouched — nothing to log
+    const state = buildRouterState(body, config.stateChars);
+    const t0 = Date.now();
+    const result = await classifyViaHttp(state, effectiveConfig, fetchImpl);
+    const ms = Date.now() - t0;
+    let would = model;
+    let tier: ModelRouterTier = "coding";
+    let conf = 0;
+    let fb = true;
+    let sticky = false;
+    let sess = "";
+    if (result) {
+      const session = classifyWithSessions(body, result);
+      tier = session.result.tier;
+      conf = result.confidence;
+      fb = session.result.fallback;
+      sticky = session.sticky;
+      sess = session.session;
+      const selection = selectTierCombo(session.result, config);
+      would =
+        config.policy === "downgrade"
+          ? result.tier === "coding" && !fb && result.confidence >= config.downgradeMinConf
+            ? config.downgradeTo
+            : model
+          : model === config.virtualModel
+            ? selection.combo
+            : model;
+    }
+    logModelRouterDecision({
+      policy: "shadow",
+      requested: model,
+      would,
+      tier,
+      confidence: conf,
+      fb,
+      sticky,
+      sess,
+      ms,
+      applied: false,
+    });
+  } catch {
+    /* fire-and-forget: shadow logging must never break the request */
+  }
 }

@@ -625,7 +625,8 @@ async function handleChatImplementation(
   // closed set), the combo's own scorer picks the model. With the flag off this
   // branch is not taken at all, so routing stays byte-identical to today.
   if (isModelRouterInprocessEnabled()) {
-    const tierRouter = await maybeApplyModelRouterTier({ body, modelStr });
+    const noRoute = (request.headers.get("x-omniroute-no-route") || "").trim() === "1";
+    const tierRouter = await maybeApplyModelRouterTier({ body, modelStr, noRoute });
     if (tierRouter.applied && tierRouter.model) {
       log.debug(
         "MODEL_ROUTER",
