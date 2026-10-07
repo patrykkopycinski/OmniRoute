@@ -190,6 +190,70 @@ function stripOpaqueFields(record: JsonRecord): void {
   delete record.data;
 }
 
+/**
+ * Input-portable reasoning detail: a display summary, portable plaintext
+ * (text/content), or opaque continuation state. Anything else — e.g. Claude-style
+ * `{type:"thinking", thinking:"..."}` blocks echoed into chat history — is a
+ * cross-protocol artifact no chat upstream accepts on input (kimi k3 rejects
+ * them with `reasoning_details ... entry 0 has an invalid type`; incident
+ * 2026-09-14 combo 503 storm).
+ */
+function isPortableChatReasoningDetail(record: JsonRecord): boolean {
+  if (isSummaryDetail(record)) return true;
+  if (isNonEmptyString(record.text) || isNonEmptyString(record.content)) return true;
+  return hasOpaqueReasoningDetail(record);
+}
+
+/**
+ * Always-on artifact scrub for chat `reasoning_details`. Streaming-only keys
+ * (`streaming_index`) are rejected by strict input validators even on otherwise
+ * valid entries (kimi: "must not contain streaming index"), and foreign-shape
+ * entries are dropped entirely. Runs for every transport because these shapes
+ * are never provider-authentic continuation state.
+ */
+function scrubChatReasoningDetailArtifacts(details: unknown[]): unknown[] {
+  const scrubbed: unknown[] = [];
+  for (const detail of details) {
+    const record = asRecord(detail);
+    if (!record) continue;
+    if (!isPortableChatReasoningDetail(record)) continue;
+    if (record.streaming_index === undefined) {
+      scrubbed.push(detail);
+      continue;
+    }
+    const next = { ...record };
+    delete next.streaming_index;
+    const remainingKeys = Object.keys(next).filter((key) => key !== "type");
+    if (remainingKeys.length > 0) scrubbed.push(next);
+  }
+  return scrubbed;
+}
+
+function scrubForeignChatReasoningDetails(messages: unknown[]): unknown[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    const record = asRecord(message);
+    if (!record || record.role !== "assistant" || !Array.isArray(record.reasoning_details)) {
+      return message;
+    }
+    const details = scrubChatReasoningDetailArtifacts(record.reasoning_details);
+    const hasStreamingIndex = record.reasoning_details.some(
+      (detail) => asRecord(detail)?.streaming_index !== undefined
+    );
+    if (details.length === record.reasoning_details.length && !hasStreamingIndex) {
+      // No artifact removed — keep the original object and array references.
+      return message;
+    }
+    changed = true;
+    const scrubbed = { ...record };
+    if (details.length > 0) scrubbed.reasoning_details = details;
+    else delete scrubbed.reasoning_details;
+    return scrubbed;
+  });
+  // Identity contract: compatible history is never cloned (#1599 regression guard).
+  return changed ? next : messages;
+}
+
 function stripChatReasoningDetails(details: unknown[], transport: ReasoningTransport): unknown[] {
   return details.flatMap((detail) => {
     const record = asRecord(detail);
@@ -331,8 +395,11 @@ export function applyReasoningInputPolicy(
   }
 
   if (inputFormat === "chat") {
-    if ((incompatibleReasoning || mixedState) && Array.isArray(body.messages)) {
-      body.messages = dropIncompatibleChatReasoning(body.messages, transport);
+    if (Array.isArray(body.messages)) {
+      body.messages = scrubForeignChatReasoningDetails(body.messages);
+      if (incompatibleReasoning || mixedState) {
+        body.messages = dropIncompatibleChatReasoning(body.messages, transport);
+      }
     }
     return { incompatibleReasoning: false };
   }
