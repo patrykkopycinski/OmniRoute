@@ -28,8 +28,9 @@ test("fuzzyDedup flag drives the session-dedup lane to produce a CCR marker", as
   const res = await route.POST(
     makeReq({
       messages: [
-        { role: "user", content: A },
-        { role: "user", content: A + " sigma" },
+        { role: "assistant", content: A },
+        { role: "assistant", content: A + " sigma" },
+        { role: "user", content: "latest turn instruction" },
       ],
       engineId: "session-dedup",
       fuzzyDedup: { enabled: true },

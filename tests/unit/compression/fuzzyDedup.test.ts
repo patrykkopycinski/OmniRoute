@@ -2,9 +2,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  shingles, jaccard, findNearDuplicates, applyFuzzyPass,
+  shingles,
+  jaccard,
+  findNearDuplicates,
+  applyFuzzyPass,
 } from "../../../open-sse/services/compression/engines/session-dedup/fuzzy.ts";
-import { retrieveBlock, resetCcrStore } from "../../../open-sse/services/compression/engines/ccr/index.ts";
+import {
+  retrieveBlock,
+  resetCcrStore,
+} from "../../../open-sse/services/compression/engines/ccr/index.ts";
 
 test("shingles: k=3 word windows, deterministic, empty when < k words", () => {
   assert.equal(shingles("one two", 3).size, 0);
@@ -43,10 +49,17 @@ test("applyFuzzyPass: near-dup message → CCR marker, recoverable; below thresh
   const A = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron";
   const Aprime = A + " pi"; // ≥0.85 similar
   const messages = [
-    { role: "user", content: A },
-    { role: "user", content: Aprime },
+    { role: "assistant", content: A },
+    { role: "assistant", content: Aprime },
+    { role: "user", content: "latest turn instruction" },
   ];
-  const out = applyFuzzyPass(messages, { minJaccard: 0.85, shingleSize: 3, maxBlocks: 200, minBlockChars: 10, principalId: "p1" });
+  const out = applyFuzzyPass(messages, {
+    minJaccard: 0.85,
+    shingleSize: 3,
+    maxBlocks: 200,
+    minBlockChars: 10,
+    principalId: "p1",
+  });
   assert.equal(out.fuzzyCount, 1);
   const marker = out.messages[1].content as string;
   assert.match(marker, /^\[CCR retrieve hash=[0-9a-f]{24} chars=\d+\]$/);

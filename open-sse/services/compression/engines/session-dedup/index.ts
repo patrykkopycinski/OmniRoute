@@ -19,11 +19,13 @@
  *
  * Conservative guards:
  *   - Never touch `role: "system"`.
+ *   - Never touch the current turn: the latest real user message and everything
+ *     after it (assistant tool calls, tool results) (t_f53bc5fd).
+ *   - Never collapse a whole user message (or a whole text part of one) to a
+ *     bare marker — user turns stay effectively non-empty (t_f53bc5fd).
  *   - Never touch multipart content parts other than `type: "text"`.
  *   - Only dedup blocks ≥ minBlockChars (default 80 chars) AND ≥ MIN_BLOCK_LINES lines.
  *   - First occurrence is ALWAYS kept intact; only later identical occurrences are replaced.
- *   - Never rewrite the current turn (messages after the last assistant message): the
- *     model must see what it just read or was just sent. It is deduped on a later turn.
  *
  * Reconstruction:
  *   Replace every `[dedup:ref sha=XXXXXXXX]` marker with the original block text
@@ -33,6 +35,7 @@
 import crypto from "node:crypto";
 import { createCompressionStats } from "../../stats.ts";
 import { runFuzzyPass } from "./fuzzy.ts";
+import { currentTurnBoundary } from "./boundary.ts";
 import { callerSupportsCcrRetrieve } from "../ccr/protocolInstruction.ts";
 import type {
   CompressionEngine,
@@ -113,8 +116,8 @@ function findSuffixBlocks(
 // ─── two-pass dedup on message texts ─────────────────────────────────────────
 
 /**
- * Deduplicates repeated lines within a single message (intra-message dedup).
- * Replaces repeated suffix blocks with markers.
+ * Literal (non-RegExp) occurrence counting: V8 rejects huge escaped regex
+ * sources with "Regular expression too large" on remembered JSON/tool blobs.
  */
 function countLiteralOccurrences(text: string, needle: string): number {
   if (!needle) return 0;
@@ -151,6 +154,10 @@ function replaceLiteralOccurrencesAfterFirst(
   }
 }
 
+/**
+ * Deduplicates repeated lines within a single message (intra-message dedup).
+ * Replaces repeated suffix blocks with markers.
+ */
 function dedupeWithinMessage(
   text: string,
   minBlockChars: number
@@ -176,8 +183,8 @@ function dedupeWithinMessage(
   let changed = false;
 
   for (const { block } of sortedBlocks) {
-    // Only dedup blocks that appear 2+ times in the text. Use literal indexOf
-    // scanning instead of compiling the whole block into a RegExp: remembered
+    // Only dedup blocks that appear 2+ times in the text.
+    // Literal scanning instead of compiling the whole block into a RegExp: remembered
     // JSON/tool blobs can be hundreds of KB and V8 rejects such regex sources
     // with "Regular expression too large".
     const occurrences = countLiteralOccurrences(result, block);
@@ -198,9 +205,9 @@ function dedupeWithinMessage(
  * Returns the replaced texts for duplicate messages, a reverse map, and a count.
  */
 function dedupMessageTexts(
-  msgTexts: Array<{ msgIdx: number; messageIndex: number; text: string }>,
+  msgTexts: Array<{ msgIdx: number; text: string }>,
   minBlockChars: number,
-  currentTurnStart: number
+  userMsgIdxs: ReadonlySet<number> = new Set()
 ): {
   deduped: Map<number, string>;
   dedupCount: number;
@@ -236,10 +243,7 @@ function dedupMessageTexts(
   }
 
   // Pass 2: for each message, find blocks that were FIRST seen in an earlier message.
-  // The current turn is never rewritten: a re-read tool result replaced by a marker
-  // reads to the model as a lost read, and it reads the file again another way.
-  for (const { msgIdx, messageIndex, text } of msgTexts) {
-    if (messageIndex >= currentTurnStart) continue;
+  for (const { msgIdx, text } of msgTexts) {
     const lines = text.split("\n");
     const blocks = findSuffixBlocks(lines, minBlockChars);
 
@@ -271,6 +275,16 @@ function dedupMessageTexts(
       const idx = result.indexOf(block);
       if (idx !== -1) {
         const marker = `[dedup:ref sha=${sha}]`;
+        // AC2: never collapse a whole user message to a bare dedup marker —
+        // the model would see an empty user turn. Skip whole-text blocks;
+        // shorter suffix blocks (first line preserved) are still eligible.
+        if (
+          userMsgIdxs.has(msgIdx) &&
+          result.slice(0, idx).trim() === "" &&
+          idx + block.length >= text.length
+        ) {
+          continue;
+        }
         result = result.slice(0, idx) + marker + result.slice(idx + block.length);
         changed = true;
         replaced.add(block);
@@ -301,27 +315,46 @@ type MessageLike = {
  */
 function processMessages(
   messages: MessageLike[],
-  minBlockChars: number
+  minBlockChars: number,
+  latestUserIdx: number
 ): { messages: MessageLike[]; dedupCount: number } {
+  // Current-turn boundary (t_f53bc5fd): never dedup the latest user message or
+  // anything after it (assistant tool calls / tool results of the live turn).
+  // Replacing the live instruction with a [dedup:ref] marker left the model an
+  // empty user turn ("your last message came through empty") 11x on 2026-10-06/07.
+  const userMsgIdxs = new Set<number>();
+  for (let i = 0; i < latestUserIdx; i++) {
+    if (messages[i].role === "user") userMsgIdxs.add(i);
+  }
+
   // Collect (msgIdx, text) for non-system string-content messages.
-  // For multipart, index each text part separately.
-  const msgTexts: Array<{ msgIdx: number; messageIndex: number; text: string }> = [];
+  // For multipart, index each text part separately under the composite key
+  // i*100000 + p + 1 — expand userMsgIdxs into that same composite-key space so
+  // the AC2 whole-message guard fires for text parts of user messages too.
+  const msgTexts: Array<{ msgIdx: number; text: string }> = [];
+  for (const i of [...userMsgIdxs]) {
+    const c = messages[i].content;
+    if (Array.isArray(c)) {
+      for (let p = 0; p < c.length; p++) {
+        if (c[p]["type"] === "text" && typeof c[p]["text"] === "string") {
+          userMsgIdxs.add(i * 100000 + p + 1);
+        }
+      }
+    }
+  }
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role === "system") continue;
+    if (latestUserIdx !== -1 && i >= latestUserIdx) continue; // current turn is off-limits
     if (typeof msg.content === "string") {
-      msgTexts.push({ msgIdx: i, messageIndex: i, text: msg.content });
+      msgTexts.push({ msgIdx: i, text: msg.content });
     } else if (Array.isArray(msg.content)) {
       for (let p = 0; p < msg.content.length; p++) {
         const part = msg.content[p];
         if (part["type"] === "text" && typeof part["text"] === "string") {
           // Composite key: i * 100000 + p + 1 (safe for reasonable message counts)
-          msgTexts.push({
-            msgIdx: i * 100000 + p + 1,
-            messageIndex: i,
-            text: part["text"] as string,
-          });
+          msgTexts.push({ msgIdx: i * 100000 + p + 1, text: part["text"] as string });
         }
       }
     }
@@ -331,15 +364,7 @@ function processMessages(
     return { messages, dedupCount: 0 };
   }
 
-  // Messages after the last assistant message form the current turn.
-  let currentTurnStart = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") {
-      currentTurnStart = i + 1;
-      break;
-    }
-  }
-  const { deduped, dedupCount } = dedupMessageTexts(msgTexts, minBlockChars, currentTurnStart);
+  const { deduped, dedupCount } = dedupMessageTexts(msgTexts, minBlockChars, userMsgIdxs);
 
   if (dedupCount === 0) {
     return { messages, dedupCount: 0 };
@@ -469,9 +494,11 @@ export const sessionDedupEngine: CompressionEngine = {
     }
 
     const start = performance.now();
+    const latestUserIdx = currentTurnBoundary(messages as MessageLike[]);
     const { messages: exactMessages, dedupCount } = processMessages(
       messages as MessageLike[],
-      minBlockChars
+      minBlockChars,
+      latestUserIdx
     );
 
     const { messages: finalMessages, fuzzyCount } = runFuzzyPass(
@@ -479,6 +506,7 @@ export const sessionDedupEngine: CompressionEngine = {
       stepConfig,
       minBlockChars,
       options?.principalId,
+      latestUserIdx,
       callerSupportsCcrRetrieve(body)
     );
 

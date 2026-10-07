@@ -1,5 +1,6 @@
 // open-sse/services/compression/engines/session-dedup/fuzzy.ts
 import { buildCcrMarker, tryStoreBlock } from "../ccr/index.ts";
+import { currentTurnBoundary } from "./boundary.ts";
 
 type MessageLike = { role?: string; content?: unknown; [key: string]: unknown };
 
@@ -83,6 +84,8 @@ export interface FuzzyPassOptions {
   maxBlocks: number;
   minBlockChars: number;
   principalId?: string;
+  /** Pre-computed current-turn boundary (t_9f3121b3): shared with the exact pass. */
+  latestUserIdx?: number;
 }
 export interface FuzzyPassResult {
   messages: MessageLike[];
@@ -96,10 +99,18 @@ export interface FuzzyPassResult {
  */
 export function applyFuzzyPass(messages: MessageLike[], opts: FuzzyPassOptions): FuzzyPassResult {
   try {
+    // Current-turn boundary (t_f53bc5fd): never fuzzy-replace the latest user
+    // message or anything after it. Tool-result messages (role:"user" with only
+    // tool_result parts) are current-turn traffic, not a new user turn. The
+    // engine passes the boundary it already computed (t_9f3121b3: no drift).
+    const latestUserIdx = opts.latestUserIdx ?? currentTurnBoundary(messages);
     const blocks: FuzzyBlock[] = [];
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
-      if (m.role === "system") continue;
+      // Fuzzy dedup replaces whole messages, so user messages are ineligible
+      // (AC2, t_f53bc5fd round 2: the marker would leave an empty user turn).
+      if (m.role === "system" || m.role === "user") continue; // MUTATION-TESTED
+      if (latestUserIdx !== -1 && i >= latestUserIdx) continue;
       if (typeof m.content === "string" && m.content.length >= opts.minBlockChars) {
         blocks.push({ text: m.content, index: i });
       }
@@ -137,6 +148,7 @@ export function runFuzzyPass(
   stepConfig: Record<string, unknown>,
   minBlockChars: number,
   principalId?: string,
+  latestUserIdx?: number,
   callerCanRetrieve = false
 ): FuzzyPassResult {
   const raw = stepConfig["fuzzy"] as
@@ -154,5 +166,6 @@ export function runFuzzyPass(
     maxBlocks: MAX_FUZZY_BLOCKS,
     minBlockChars,
     principalId,
+    latestUserIdx,
   });
 }
