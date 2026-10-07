@@ -36,6 +36,7 @@ let dir: string;
 let logPath: string;
 
 beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected network fetch"));
   dir = mkdtempSync(path.join(tmpdir(), "mr-shadow-"));
   logPath = path.join(dir, "decisions.jsonl");
   __resetModelRouterSessionsForTests();
@@ -43,8 +44,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
-  vi.restoreAllMocks();
+  try {
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  }
 });
 
 function cfg(overrides: Partial<ModelRouterConfig> = {}): ModelRouterConfig {
@@ -65,7 +70,14 @@ function body(text: string, prev?: string) {
   return { model: DEFAULT_DOWNGRADE_FROM, messages } as never;
 }
 
-/** Shadow decision for `text`, decider=rule (no classifier call). */
+/** Shadow still calls the classifier in rule mode; return a deterministic fallback offline. */
+const fallbackFetch: typeof fetch = async () =>
+  new Response(
+    JSON.stringify({ tier: "coding", confidence: 0, probabilities: [], fallback: true }),
+    { headers: { "content-type": "application/json" } }
+  );
+
+/** Shadow decision for `text`, using the injected classifier response (never the network). */
 async function shadow(
   text: string,
   prev?: string,
@@ -75,6 +87,7 @@ async function shadow(
     body: body(text, prev),
     modelStr: DEFAULT_DOWNGRADE_FROM,
     config,
+    fetchImpl: fallbackFetch,
   });
 }
 
@@ -127,6 +140,7 @@ describe("shadow text log record shape", () => {
       "an earlier question?",
       cfg({ shadow: true, decider: "rule", shadowTextLog: logPath })
     );
+    await readLines(logPath, 1);
     await shadow(
       "second call",
       undefined,
