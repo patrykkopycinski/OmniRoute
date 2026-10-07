@@ -208,6 +208,8 @@ export type AutoProviderCandidate = ProviderCandidate & {
   statusPenaltyReason?: string;
 };
 
+import type { ComboStepParams } from "./stepParams.ts";
+
 export type ResolvedComboTarget = {
   kind: "model";
   stepId: string;
@@ -221,6 +223,12 @@ export type ResolvedComboTarget = {
   weight: number;
   label: string | null;
   prompt?: string | null;
+  /**
+   * Per-step request params (feat/combo-step-params): token caps, thinking
+   * control, extra_body merges — applied to THIS step's attempt body only.
+   * See ./stepParams.ts for the full contract.
+   */
+  params?: ComboStepParams | null;
   failoverBeforeRetry?: unknown;
   fallbackOnlyOnQuotaExhaustion?: boolean;
   trafficType?: "production" | "shadow";
@@ -250,6 +258,9 @@ export type ResolvedComboRefTarget = {
   weight: number;
   label: string | null;
   fallbackOnlyOnQuotaExhaustion?: boolean;
+  /** feat/combo-step-params: applies to every model this ref expands to;
+   *  overrides params on the nested combo's own model steps. */
+  params?: ResolvedComboTarget["params"];
 };
 
 export type ResolvedComboUnit = ResolvedComboTarget | ResolvedComboRefTarget;

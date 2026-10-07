@@ -120,6 +120,9 @@ function normalizeRuntimeStep(
       weight,
       label,
       ...(step.fallbackOnlyOnQuotaExhaustion ? { fallbackOnlyOnQuotaExhaustion: true } : {}),
+      // feat/combo-step-params: ref-level params override nested-step params
+      // for every target this ref expands to.
+      ...(step.params ? { params: step.params } : {}),
     };
   }
 
@@ -152,6 +155,8 @@ function normalizeRuntimeStep(
     // `prompt` is a per-step pipeline input and only exists on a model step —
     // #8894 widened the union with ComboProviderWildcardStep, which has no prompt.
     prompt: (step.kind === "model" ? step.prompt : null) || null,
+    // feat/combo-step-params: carry per-step params onto the resolved target.
+    ...(step.kind === "model" && step.params ? { params: step.params } : {}),
     ...(step.kind === "model" && step.fallbackOnlyOnQuotaExhaustion
       ? { fallbackOnlyOnQuotaExhaustion: true }
       : {}),
@@ -321,7 +326,13 @@ export function resolveNestedComboTargets(
 
   for (const step of runtimeSteps) {
     if (step.kind === "combo-ref") {
-      resolved.push(...expandRuntimeStep(step, allCombos, new Set(visited), depth, path, maxDepth));
+      // feat/combo-step-params: params on the ref OVERRIDE params on the
+      // nested combo's own model steps (parent's shape wins per use-site).
+      const expanded = expandRuntimeStep(step, allCombos, new Set(visited), depth, path, maxDepth);
+      for (const t of expanded) {
+        if (step.params && t.kind === "model") resolved.push({ ...t, params: step.params });
+        else resolved.push(t);
+      }
       continue;
     }
     resolved.push(step);

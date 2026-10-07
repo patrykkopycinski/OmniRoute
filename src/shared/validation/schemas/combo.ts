@@ -1,17 +1,5 @@
 import { z } from "zod";
-import {
-  ACCOUNT_FALLBACK_STRATEGY_VALUES,
-  ROUTING_STRATEGY_VALUES,
-} from "@/shared/constants/routingStrategies";
-import { SUPPORTED_BATCH_ENDPOINTS } from "@/shared/constants/batchEndpoints";
-import { MAX_REQUEST_BODY_LIMIT_MB, MIN_REQUEST_BODY_LIMIT_MB } from "@/shared/constants/bodySize";
-import { COMBO_CONFIG_MODES } from "@/shared/constants/comboConfigMode";
-import { providerAllowsOptionalApiKey } from "@/shared/constants/providers";
-import { HIDEABLE_SIDEBAR_ITEM_IDS } from "@/shared/constants/sidebarVisibility";
-import {
-  isForbiddenUpstreamHeaderName,
-  isForbiddenCustomHeaderName,
-} from "@/shared/constants/upstreamHeaders";
+import { ROUTING_STRATEGY_VALUES } from "@/shared/constants/routingStrategies";
 import { MAX_TIMER_TIMEOUT_MS } from "@/shared/utils/runtimeTimeouts";
 
 // ──── Combo Schemas ────
@@ -23,6 +11,15 @@ export const comboStepMetaSchema = {
   fallbackOnlyOnQuotaExhaustion: z.boolean().optional(),
 };
 
+export const comboStepParamsSchema = z
+  .object({
+    maxTokens: z.number().int().min(64).max(200000).optional(),
+    thinking: z.enum(["off"]).optional(),
+    extraBody: z.record(z.string(), z.unknown()).optional(),
+    mergeReasoningIntoContent: z.boolean().optional(),
+    stripResponseFormat: z.boolean().optional(),
+  })
+  .optional();
 export const comboModelStepInputSchema = z.object({
   kind: z.literal("model").optional(),
   provider: z.string().trim().min(1).max(120).optional(),
@@ -36,6 +33,9 @@ export const comboModelStepInputSchema = z.object({
   // step's input, and this `prompt` is injected as that step's system instruction.
   // Ignored by every other strategy, so it is fully backward-compatible.
   prompt: z.string().trim().min(1).max(20000).optional(),
+  // Per-step request params (feat/combo-step-params): optional per-step
+  // request shaping — token caps, thinking control, extra_body merges.
+  params: comboStepParamsSchema,
   ...comboStepMetaSchema,
 });
 
@@ -43,6 +43,9 @@ export const comboRefStepInputSchema = z.object({
   kind: z.literal("combo-ref"),
   comboName: z.string().trim().min(1).max(100),
   ...comboStepMetaSchema,
+  // feat/combo-step-params: params on a combo-ref apply to EVERY model the
+  // ref expands to (parent's shape overrides the nested combo's own params).
+  params: comboStepParamsSchema,
 });
 
 // A combo entry can be a plain string (legacy), a legacy object, or a structured ComboStep.

@@ -17,6 +17,7 @@ import {
   releaseQualityClone,
   releaseRejectedQualityResponse,
 } from "./validateQuality.ts";
+import { applyComboStepParams, applyComboStepResponseGuards } from "./stepParams.ts";
 import type { ResponseValidationConfig } from "./responseValidation.ts";
 import type {
   ComboCollectionLike,
@@ -90,7 +91,16 @@ async function executeModelUnit(args: {
     const available = await args.isModelAvailable(args.unit.modelStr, args.unit);
     if (available !== true) return errorResponse(503, `Model ${args.unit.modelStr} is unavailable`);
   }
-  return args.handleSingleModel(args.body, args.unit.modelStr, {
+  // feat/combo-step-params: per-step request shaping on the nested execute
+  // path too — mirrors the main-loop seam (apply to the attempt body, never
+  // to the shared request body). Ref-level params on the combo-ref unit were
+  // already spread onto each expanded model unit at resolution time
+  // (comboStructure.ts), so unit.params here covers both origins.
+  const unitBody: Record<string, unknown> = { ...args.body };
+  if (args.unit.params) {
+    applyComboStepParams(unitBody, args.unit.params);
+  }
+  return args.handleSingleModel(unitBody, args.unit.modelStr, {
     ...args.unit,
     effectiveComboStrategy: args.effectiveComboStrategy,
     failoverBeforeRetry: args.failoverBeforeRetry,
@@ -130,9 +140,18 @@ export async function executeComboRefUnit(args: {
     childComboName: childCombo.name,
   });
   if (childNesting instanceof Response) return childNesting;
+  // feat/combo-step-params: ref-level params apply to every model the child
+  // combo runs (execute-mode equivalent of flatten-mode expansion override).
+  // The child's own step params still apply at its dispatch seams — for
+  // maxTokens the clamp-never-enlarge rule makes the tighter cap win; for
+  // thinking:"off" it is idempotent.
+  const refBody: Record<string, unknown> = { ...args.body };
+  if (args.unit.params) {
+    applyComboStepParams(refBody, args.unit.params);
+  }
   return args.runCombo({
     ...args.baseOptions,
-    body: args.body,
+    body: refBody,
     combo: childCombo,
     nesting: childNesting,
   });
@@ -299,7 +318,7 @@ export async function executeRuntimeUnitCombo(args: {
         `Trying ${unit.kind} ${unitDisplayName(unit)}${retry > 0 ? ` (retry ${retry})` : ""}`
       );
       let qualityRetryable: boolean | null = null;
-      const response = await executeRuntimeUnit({
+      let response = await executeRuntimeUnit({
         body: args.body,
         unit,
         allCombos: args.allCombos,
@@ -312,6 +331,12 @@ export async function executeRuntimeUnitCombo(args: {
         effectiveComboStrategy: effectiveStrategy,
         fallbackAttempts: fallbackCount,
       });
+      // feat/combo-step-params: response-side guards BEFORE quality
+      // validation, mirroring the main-loop seam. Reads via clone inside the
+      // guard — the original body stays undisturbed for later stages.
+      if (response.ok && unit.params) {
+        response = await applyComboStepResponseGuards(response, unit.params, clientRequestedStream);
+      }
       lastResponse = response;
       if (response.ok) {
         if (unit.kind === "combo-ref") {

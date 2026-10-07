@@ -101,6 +101,7 @@ import type { CompressionMode } from "../compression/types.ts";
 import type { AttemptLoopDeps, AttemptLoopState, ExecuteTargetResult } from "./attemptLoopTypes.ts";
 import type { ComboErrorBody, ComboRetryAfter, ResolvedComboTarget } from "./types.ts";
 import type { ResponseValidationConfig } from "./responseValidation.ts";
+import { applyComboStepParams, applyComboStepResponseGuards } from "./stepParams.ts";
 import { resolveComboDailyReset } from "./comboDailyResetClock.ts";
 import type { ProtectedPriorityStopCause } from "./protectedPriorityStopStatus.ts";
 
@@ -360,11 +361,15 @@ export async function executeTargetAttempt(opts: {
         decision: "dispatched",
       });
     }
-    const result = await deps.handleSingleModelWithTimeout(attemptBody, modelStr, {
+    applyComboStepParams(attemptBody, target.params);
+    let result = await deps.handleSingleModelWithTimeout(attemptBody, modelStr, {
       ...targetForAttempt,
       effectiveComboStrategy: deps.strategy,
       failoverBeforeRetry: deps.config.failoverBeforeRetry,
     });
+    if (result.ok) {
+      result = await applyComboStepResponseGuards(result, target.params, deps.clientRequestedStream);
+    }
 
     // Success — validate response quality before returning
     if (result.ok) {

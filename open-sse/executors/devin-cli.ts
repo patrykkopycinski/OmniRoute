@@ -30,7 +30,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
-import { BaseExecutor, type ExecuteInput, type ProviderCredentials } from "./base.ts";
+import { BaseExecutor, type ExecuteInput } from "./base.ts";
 
 // ─── Binary discovery ────────────────────────────────────────────────────────
 
@@ -148,7 +148,25 @@ export class DevinCliExecutor extends BaseExecutor {
     const sseStream = new ReadableStream<Uint8Array>({
       start(controller) {
         const enc = new TextEncoder();
-        const emit = (data: string) => controller.enqueue(enc.encode(data));
+        let controllerClosed = false;
+        const emit = (data: string) => {
+          if (controllerClosed) return;
+          try {
+            controller.enqueue(enc.encode(data));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ERR_INVALID_STATE") throw error;
+            controllerClosed = true;
+          }
+        };
+        const closeController = () => {
+          if (controllerClosed) return;
+          controllerClosed = true;
+          try {
+            controller.close();
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ERR_INVALID_STATE") throw error;
+          }
+        };
 
         const env: NodeJS.ProcessEnv = { ...process.env };
         if (apiKey) env.WINDSURF_API_KEY = apiKey;
@@ -246,7 +264,7 @@ export class DevinCliExecutor extends BaseExecutor {
           }, 2000);
           killTimer.unref?.();
 
-          controller.close();
+          closeController();
         };
 
         // ── stdout reader (NDJSON) ──────────────────────────────────────────
