@@ -221,6 +221,7 @@ import {
   isContextOverflow400,
   isParamValidation400,
   isModelScoped400,
+  isEndpointRouting400,
 } from "./combo/comboPredicates.ts";
 export {
   getConnectionStatusQuotaCutoffReason,
@@ -229,6 +230,7 @@ export {
   isContextOverflow400,
   isParamValidation400,
   isModelScoped400,
+  isEndpointRouting400,
 };
 import { applyComboTargetExhaustion } from "./combo/targetExhaustion.ts";
 import {
@@ -2356,7 +2358,13 @@ async function handleComboChatInner({
           // upstream 400s on the same GitHub models, all day). isModelLocked()
           // is checked before dispatch (see the pre-check above this loop), so
           // this lockout is honored on the next request.
-          if (result.status === 400 && isModelScoped400(errorText) && provider && rawModel) {
+          if (
+            result.status === 400 &&
+            isModelScoped400(errorText) &&
+            !isEndpointRouting400(errorText) &&
+            provider &&
+            rawModel
+          ) {
             lockModelIfPerModelQuota(
               provider,
               targetWithConnection.connectionId || "",

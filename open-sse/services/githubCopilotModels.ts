@@ -18,6 +18,8 @@
  * offline/unauthed/failed refresh so the import flow never breaks.
  */
 import { getGitHubCopilotChatHeaders } from "../config/providerHeaderProfiles.ts";
+import { recordCopilotModelEndpoints } from "../config/copilotEndpointSupport.ts";
+import { getModelTargetFormat } from "../config/providerModels.ts";
 
 export const GITHUB_COPILOT_MODELS_URL = "https://api.githubcopilot.com/models";
 
@@ -156,6 +158,10 @@ export function parseGitHubCopilotModels(data: unknown): GitHubCopilotModel[] {
     seen.add(id);
     const name = toNonEmptyString(item.name) || toNonEmptyString(item.display_name) || id;
     models.push({ id, name, owned_by: "github" });
+    recordCopilotModelEndpoints(
+      id,
+      item.supported_endpoints ?? asRecord(item.capabilities).supported_endpoints
+    );
   }
 
   return models;
@@ -322,4 +328,59 @@ export async function fetchGheCopilotModels(
   } catch {
     return [];
   }
+}
+
+const ENDPOINT_DISCOVERY_TTL_MS = 60 * 60 * 1000;
+const ENDPOINT_DISCOVERY_FAILURE_TTL_MS = 60 * 1000;
+const ENDPOINT_DISCOVERY_TIMEOUT_MS = 4000;
+let endpointDiscoveryExpiresAt = 0;
+let endpointDiscoveryInFlight: Promise<void> | null = null;
+
+/** Test helper. */
+export function resetCopilotEndpointDiscovery(): void {
+  endpointDiscoveryExpiresAt = 0;
+  endpointDiscoveryInFlight = null;
+}
+
+/**
+ * Lazily learn Copilot `supported_endpoints` for models the static registry does not
+ * know (e.g. a freshly shipped gpt-7), so a Responses-only model is dispatched at
+ * /responses after a gateway restart without anyone re-running "Import Models".
+ *
+ * No-ops for models with a static targetFormat, while a prior discovery is fresh, and
+ * never throws — a failed discovery just leaves the chat default in place.
+ */
+export async function ensureCopilotEndpointsDiscovered(options: {
+  model: string;
+  tokens: Array<string | null | undefined>;
+  fetchImpl?: typeof fetch;
+}): Promise<void> {
+  const { model, fetchImpl = fetch } = options;
+  if (!model || /claude|gemini/i.test(model)) return;
+  if (getModelTargetFormat("gh", model)) return;
+  if (Date.now() < endpointDiscoveryExpiresAt) return;
+  const token = options.tokens.map(toNonEmptyString).find(Boolean);
+  if (!token) return;
+  if (!endpointDiscoveryInFlight) {
+    endpointDiscoveryInFlight = (async () => {
+      try {
+        const response = await fetchImpl(GITHUB_COPILOT_MODELS_URL, {
+          method: "GET",
+          headers: {
+            ...getGitHubCopilotChatHeaders("application/json"),
+            Authorization: `Bearer ${token}`,
+          },
+          signal: AbortSignal.timeout(ENDPOINT_DISCOVERY_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`models ${response.status}`);
+        parseGitHubCopilotModels(await response.json());
+        endpointDiscoveryExpiresAt = Date.now() + ENDPOINT_DISCOVERY_TTL_MS;
+      } catch {
+        endpointDiscoveryExpiresAt = Date.now() + ENDPOINT_DISCOVERY_FAILURE_TTL_MS;
+      } finally {
+        endpointDiscoveryInFlight = null;
+      }
+    })();
+  }
+  await endpointDiscoveryInFlight;
 }

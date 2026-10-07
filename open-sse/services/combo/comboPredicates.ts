@@ -635,3 +635,22 @@ export function isModelScoped400(errorText: string | null | undefined): boolean 
     /\bdoes\s+not\s+support\s+(?:the\s+)?responses\s+api\b/i.test(text)
   );
 }
+
+/**
+ * A 400 that says the model exists but is served on a DIFFERENT upstream endpoint
+ * ("model X is not accessible via the /chat/completions endpoint",
+ * `unsupported_api_for_model`, "does not support Responses API"). That is a
+ * deterministic routing/config error on OUR side, not a credential, quota or
+ * entitlement problem — the combo may still advance, but it must NOT lock the
+ * model out for an hour: the lock later surfaces as "429 All credentials cooling
+ * down", which hides the real cause and looks like quota exhaustion.
+ */
+export function isEndpointRouting400(errorText: string | null | undefined): boolean {
+  const text = String(errorText || "");
+  if (!text) return false;
+  return (
+    /\bnot\s+accessible\s+via\s+the\s+\S+\s+endpoint\b/i.test(text) ||
+    /\bunsupported_api_for_model\b/i.test(text) ||
+    /\bdoes\s+not\s+support\s+(?:the\s+)?responses\s+api\b/i.test(text)
+  );
+}

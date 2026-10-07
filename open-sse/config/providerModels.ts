@@ -1,4 +1,5 @@
 import { generateModels, generateAliasMap, type RegistryModel } from "./providerRegistry.ts";
+import { isCopilotResponsesOnlyModel } from "./copilotEndpointSupport.ts";
 
 // Lazy PROVIDER_MODELS: deferred until first property access to speed up startup.
 // The Proxy defers `generateModels()` from module-evaluation time to the first read.
@@ -221,6 +222,9 @@ export function getModelTargetFormat(aliasOrId: string, modelId: string): string
   const bareModelId = prefix ? modelId.slice(prefix.length) : modelId;
   const found = PROVIDER_MODELS[alias]?.find((m) => m.id === bareModelId);
   if (found?.targetFormat) return found.targetFormat;
+  // GitHub Copilot: discovery (`supported_endpoints` without /chat/completions) marks a
+  // model Responses-only even when the static catalog has no entry for it yet (gpt-6*).
+  if (alias === "gh" && isCopilotResponsesOnlyModel(bareModelId)) return "openai-responses";
   // #5842: OpenAI "*-pro" reasoning models (o1-pro, gpt-5.x-pro) are only served by
   // the native /v1/responses endpoint — /v1/chat/completions 404s ("only supported
   // in v1/responses"). Curated catalog entries are tagged explicitly; this heuristic
