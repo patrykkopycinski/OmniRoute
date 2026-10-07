@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 
 import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";
 import * as log from "../utils/logger";
+import { appendShadowTextLog } from "./modelRouterShadowLog";
 
 export const MODEL_ROUTER_INPROCESS_FLAG = "MODEL_ROUTER_INPROCESS";
 
@@ -70,6 +71,10 @@ export const SESSION_CAP = 512;
 /** Short-imperative rule (MODEL_ROUTER_RULE_MAX_CHARS, code points). */
 export const DEFAULT_RULE_MAX_CHARS = 40;
 
+/** Shadow text log: max code points of rule input / previous user message. */
+export const DEFAULT_SHADOW_TEXT_MAX = 2000;
+export const SHADOW_PREV_USER_MAX = 500;
+
 /** Offline-evaluated question/analysis cue regex (case-insensitive). */
 export const RULE_CUE_REGEX =
   /\?|\b(why|reason|analy[sz]e|shape|design|recommend|compare|should|evaluate|think|plan|review|is (it|this|there)|what (is|are|do|does)|how (do|does|should|can))\b/i;
@@ -94,6 +99,10 @@ export interface ModelRouterConfig {
   decider: "classifier" | "rule" | "both";
   /** MODEL_ROUTER_RULE_MAX_CHARS — max code points for the short-imperative rule. */
   ruleMaxChars: number;
+  /** MODEL_ROUTER_SHADOW_TEXT_LOG — JSONL path for shadow decisions + prompt text (null = off). */
+  shadowTextLog: string | null;
+  /** MODEL_ROUTER_SHADOW_TEXT_MAX — max code points of `text` written to that log. */
+  shadowTextMax: number;
 }
 
 export interface ClassifyResult {
@@ -197,6 +206,10 @@ export function resolveModelRouterConfig(env: Env = process.env): ModelRouterCon
           ? "both"
           : "classifier",
     ruleMaxChars: Math.floor(envNumber(env, "MODEL_ROUTER_RULE_MAX_CHARS", DEFAULT_RULE_MAX_CHARS)),
+    shadowTextLog: envString(env, "MODEL_ROUTER_SHADOW_TEXT_LOG", "") || null,
+    shadowTextMax: Math.floor(
+      envNumber(env, "MODEL_ROUTER_SHADOW_TEXT_MAX", DEFAULT_SHADOW_TEXT_MAX)
+    ),
   };
 }
 
@@ -254,9 +267,9 @@ export function isHarnessNudge(text: string): boolean {
  * Last real user text, using the same parsing as buildRouterState: text parts
  * joined with \n, `[System:`-prefixed turns skipped, newest last.
  */
-export function lastRealUserText(body: ClassifierBodyLike): string {
+export function realUserTexts(body: ClassifierBodyLike): string[] {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
-  const texts = messages
+  return messages
     .filter((m) => !!m && typeof m === "object")
     .map((m): [string, string] => {
       const rec = m as Record<string, unknown>;
@@ -264,7 +277,26 @@ export function lastRealUserText(body: ClassifierBodyLike): string {
     })
     .filter(([role, text]) => role === "user" && text.trim() !== "" && !isHarnessNudge(text))
     .map(([, text]) => text);
+}
+
+export function lastRealUserText(body: ClassifierBodyLike): string {
+  const texts = realUserTexts(body);
   return texts.length > 0 ? texts[texts.length - 1] : "";
+}
+
+export function cleanRuleText(raw: string): string {
+  let text = raw;
+  const attachedContext = text.indexOf("--- Attached Context ---");
+  if (attachedContext !== -1) text = text.slice(0, attachedContext);
+  text = text.replace(/<memory-context>[\s\S]*?<\/memory-context>/g, "");
+  // Leading [IMPORTANT: …] wrapper.
+  text = text.replace(/^\s*\[IMPORTANT:[^\]]*\]\s*/, "");
+  // Out-of-band wrapper — keep the inner text, not its surrounding text.
+  text = text.replace(
+    /^\s*\[OUT-OF-BAND USER MESSAGE[^\]]*\]([\s\S]*?)\[\/OUT-OF-BAND USER MESSAGE\]/,
+    "$1"
+  );
+  return text.trim();
 }
 
 /**
@@ -281,31 +313,20 @@ export function lastRealUserText(body: ClassifierBodyLike): string {
 export function shortImperativeRule(
   body: ClassifierBodyLike,
   ruleMaxChars: number = DEFAULT_RULE_MAX_CHARS
-): { down: boolean; len: number } {
+): { down: boolean; len: number; text: string } {
   const raw = lastRealUserText(body);
-  if (!raw) return { down: false, len: 0 };
+  if (!raw) return { down: false, len: 0, text: "" };
+
+  const text = cleanRuleText(raw);
 
   // Invoked-skill marker anywhere in the last user message → keep.
   if (/\[IMPORTANT: The user has invoked the "[^"]+" skill/.test(raw)) {
-    return { down: false, len: 0 };
+    return { down: false, len: 0, text };
   }
 
-  let text = raw;
-  const attachedContext = text.indexOf("--- Attached Context ---");
-  if (attachedContext !== -1) text = text.slice(0, attachedContext);
-  text = text.replace(/<memory-context>[\s\S]*?<\/memory-context>/g, "");
-  // Leading [IMPORTANT: …] wrapper.
-  text = text.replace(/^\s*\[IMPORTANT:[^\]]*\]\s*/, "");
-  // Out-of-band wrapper — keep the inner text, not its surrounding text.
-  text = text.replace(
-    /^\s*\[OUT-OF-BAND USER MESSAGE[^\]]*\]([\s\S]*?)\[\/OUT-OF-BAND USER MESSAGE\]/,
-    "$1"
-  );
-  text = text.trim();
-
-  if (text === "") return { down: false, len: 0 };
+  if (text === "") return { down: false, len: 0, text };
   const len = Array.from(text).length; // Unicode code points
-  return { down: len < ruleMaxChars && !RULE_CUE_REGEX.test(text), len };
+  return { down: len < ruleMaxChars && !RULE_CUE_REGEX.test(text), len, text };
 }
 
 /** Sticky session key: sha1 of the FIRST user turn's text, first 12 hex chars. */
@@ -832,6 +853,22 @@ async function shadowClassifyAndLog(
       rule: ruleDecision,
       ruleLen: rule.len,
     });
+    // Opt-in prompt-text log (MODEL_ROUTER_SHADOW_TEXT_LOG): never awaited, never throws.
+    void appendShadowTextLog(
+      config,
+      {
+        requested: model,
+        would,
+        tier,
+        confidence: conf,
+        fb,
+        sess,
+        rule: ruleDecision,
+        ruleLen: rule.len,
+        ruleText: rule.text,
+      },
+      body
+    );
   } catch {
     /* fire-and-forget: shadow logging must never break the request */
   }

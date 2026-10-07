@@ -24,6 +24,7 @@ export default defineConfig({
       "tests/unit/model-router-parity.test.ts",
       "tests/unit/model-router-downgrade-shadow.test.ts",
       "tests/unit/model-router-rule.test.ts",
+      "tests/unit/model-router-shadow-text-log.test.ts",
       "tests/unit/**/*.test.tsx",
       "open-sse/**/__tests__/**/*.test.ts",
       "open-sse/services/**/__tests__/**/*.test.ts",
