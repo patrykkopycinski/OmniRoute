@@ -67,6 +67,13 @@ export const DEFAULT_DOWNGRADE_TIMEOUT_MS = 800;
 export const SESSION_TTL_MS = 6 * 60 * 60 * 1000;
 export const SESSION_CAP = 512;
 
+/** Short-imperative rule (MODEL_ROUTER_RULE_MAX_CHARS, code points). */
+export const DEFAULT_RULE_MAX_CHARS = 40;
+
+/** Offline-evaluated question/analysis cue regex (case-insensitive). */
+export const RULE_CUE_REGEX =
+  /\?|\b(why|reason|analy[sz]e|shape|design|recommend|compare|should|evaluate|think|plan|review|is (it|this|there)|what (is|are|do|does)|how (do|does|should|can))\b/i;
+
 export interface ModelRouterConfig {
   classifyUrl: string;
   virtualModel: string;
@@ -83,6 +90,10 @@ export interface ModelRouterConfig {
   downgradeTimeoutMs: number;
   /** MODEL_ROUTER_SHADOW=1: classify + log the decision, never rewrite. */
   shadow: boolean;
+  /** Downgrade decider: classifier (default) | rule (no classifier call) | both. */
+  decider: "classifier" | "rule" | "both";
+  /** MODEL_ROUTER_RULE_MAX_CHARS — max code points for the short-imperative rule. */
+  ruleMaxChars: number;
 }
 
 export interface ClassifyResult {
@@ -179,6 +190,13 @@ export function resolveModelRouterConfig(env: Env = process.env): ModelRouterCon
       envNumber(env, "MODEL_ROUTER_DOWNGRADE_TIMEOUT_MS", DEFAULT_DOWNGRADE_TIMEOUT_MS)
     ),
     shadow: envBool(env, "MODEL_ROUTER_SHADOW", false),
+    decider:
+      envString(env, "MODEL_ROUTER_DOWNGRADE_DECIDER", "classifier") === "rule"
+        ? "rule"
+        : envString(env, "MODEL_ROUTER_DOWNGRADE_DECIDER", "classifier") === "both"
+          ? "both"
+          : "classifier",
+    ruleMaxChars: Math.floor(envNumber(env, "MODEL_ROUTER_RULE_MAX_CHARS", DEFAULT_RULE_MAX_CHARS)),
   };
 }
 
@@ -230,6 +248,64 @@ export function textFromContent(content: unknown): string {
  */
 export function isHarnessNudge(text: string): boolean {
   return text.replace(/^\s+/, "").startsWith("[System:");
+}
+
+/**
+ * Last real user text, using the same parsing as buildRouterState: text parts
+ * joined with \n, `[System:`-prefixed turns skipped, newest last.
+ */
+export function lastRealUserText(body: ClassifierBodyLike): string {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const texts = messages
+    .filter((m) => !!m && typeof m === "object")
+    .map((m): [string, string] => {
+      const rec = m as Record<string, unknown>;
+      return [typeof rec.role === "string" ? rec.role : "", textFromContent(rec.content)];
+    })
+    .filter(([role, text]) => role === "user" && text.trim() !== "" && !isHarnessNudge(text))
+    .map(([, text]) => text);
+  return texts.length > 0 ? texts[texts.length - 1] : "";
+}
+
+/**
+ * Short-imperative downgrade rule — implement EXACTLY as offline-evaluated:
+ *  1. last real user message (buildRouterState parsing)
+ *  2. strip: attached context tail, <memory-context> blocks, [IMPORTANT: …]
+ *     leading wrapper and [OUT-OF-BAND USER MESSAGE]…[/OUT-OF-BAND USER MESSAGE]
+ *     wrapper (keeping inner text), surrounding whitespace
+ *  3. downgrade iff code-point length < ruleMaxChars AND the cue regex does
+ *     NOT match
+ *  4. empty body after stripping → keep; invoked-skill marker anywhere in the
+ *     last user message → keep
+ */
+export function shortImperativeRule(
+  body: ClassifierBodyLike,
+  ruleMaxChars: number = DEFAULT_RULE_MAX_CHARS
+): { down: boolean; len: number } {
+  const raw = lastRealUserText(body);
+  if (!raw) return { down: false, len: 0 };
+
+  // Invoked-skill marker anywhere in the last user message → keep.
+  if (/\[IMPORTANT: The user has invoked the "[^"]+" skill/.test(raw)) {
+    return { down: false, len: 0 };
+  }
+
+  let text = raw;
+  const attachedContext = text.indexOf("--- Attached Context ---");
+  if (attachedContext !== -1) text = text.slice(0, attachedContext);
+  text = text.replace(/<memory-context>[\s\S]*?<\/memory-context>/g, "");
+  // Leading [IMPORTANT: …] wrapper.
+  text = text.replace(/^\s*\[IMPORTANT:[^\]]*\]\s*/, "");
+  // Out-of-band wrapper — keep the inner text, not its surrounding text.
+  text = text.replace(
+    /^\s*\[OUT-OF-BAND USER MESSAGE[^\]]*\]([\s\S]*?)\[\/OUT-OF-BAND USER MESSAGE\]/,
+    "$1"
+  );
+  text = text.trim();
+
+  if (text === "") return { down: false, len: 0 };
+  const len = Array.from(text).length; // Unicode code points
+  return { down: len < ruleMaxChars && !RULE_CUE_REGEX.test(text), len };
 }
 
 /** Sticky session key: sha1 of the FIRST user turn's text, first 12 hex chars. */
@@ -559,6 +635,38 @@ export async function maybeApplyModelRouterTier(input: MaybeApplyInput): Promise
     if (input.noRoute) return { applied: false, model };
     if (!model || model !== config.downgradeFrom) return { applied: false, model };
 
+    const rule = shortImperativeRule(input.body, config.ruleMaxChars);
+    const ruleDecision: "down" | "keep" = rule.down ? "down" : "keep";
+
+    // Decider=rule: decide without the classifier at all (zero added latency).
+    if (config.decider === "rule") {
+      const downgraded = rule.down;
+      const would = downgraded ? config.downgradeTo : model;
+      logModelRouterDecision({
+        policy: "downgrade",
+        requested: model,
+        would,
+        tier: "coding",
+        confidence: 0,
+        fb: true, // no classifier consulted → no confident tier signal
+        sticky: false,
+        sess: "",
+        ms: 0,
+        applied: downgraded,
+        rule: ruleDecision,
+        ruleLen: rule.len,
+      });
+      if (!downgraded) return { applied: false, model };
+      return {
+        applied: true,
+        model: config.downgradeTo,
+        tier: "coding",
+        confidence: 0,
+        fallback: false,
+        reason: "classified",
+      };
+    }
+
     const state = buildRouterState(input.body, config.stateChars);
     const t0 = Date.now();
     const result = await classifyViaHttp(
@@ -567,11 +675,12 @@ export async function maybeApplyModelRouterTier(input: MaybeApplyInput): Promise
       input.fetchImpl
     );
     const ms = Date.now() - t0;
-    const downgraded =
+    const classifierSays =
       result !== null &&
       result.tier === "coding" &&
       !result.fallback &&
       result.confidence >= config.downgradeMinConf;
+    const downgraded = config.decider === "both" ? classifierSays && rule.down : classifierSays;
     const would = downgraded ? config.downgradeTo : model;
     logModelRouterDecision({
       policy: "downgrade",
@@ -584,6 +693,8 @@ export async function maybeApplyModelRouterTier(input: MaybeApplyInput): Promise
       sess: "",
       ms,
       applied: downgraded,
+      rule: ruleDecision,
+      ruleLen: rule.len,
     });
     if (!downgraded) return { applied: false, model };
     return {
@@ -631,6 +742,10 @@ export interface ModelRouterDecisionLog {
   sess: string;
   ms: number;
   applied: boolean;
+  /** Short-imperative rule verdict (shadow comparison): rule=down|keep. */
+  rule?: "down" | "keep";
+  /** Code-point length of the stripped last user text (rule input). */
+  ruleLen?: number;
 }
 
 /**
@@ -641,7 +756,9 @@ export function renderModelRouterDecisionLine(d: ModelRouterDecisionLog): string
   return (
     `policy=${d.policy} requested=${d.requested} would=${d.would} tier=${d.tier} ` +
     `conf=${d.confidence.toFixed(3)} fb=${d.fb} sticky=${d.sticky} sess=${d.sess} ` +
-    `ms=${d.ms.toFixed(1)} applied=${d.applied}`
+    `ms=${d.ms.toFixed(1)} applied=${d.applied}` +
+    (d.rule !== undefined ? ` rule=${d.rule}` : "") +
+    (d.ruleLen !== undefined ? ` rule_len=${d.ruleLen}` : "")
   );
 }
 
@@ -662,7 +779,11 @@ async function shadowClassifyAndLog(
     const relevant = config.policy === "downgrade" ? model === config.downgradeFrom : true;
     if (!relevant) return; // other models pass through untouched — nothing to log
     const state = buildRouterState(body, config.stateChars);
+    const rule = shortImperativeRule(body, config.ruleMaxChars);
+    const ruleDecision: "down" | "keep" = rule.down ? "down" : "keep";
     const t0 = Date.now();
+    // Shadow measures both deciders even when live rule mode skips the classifier.
+    // The caller does not await this function, so classifier latency stays off-path.
     const result = await classifyViaHttp(state, effectiveConfig, fetchImpl);
     const ms = Date.now() - t0;
     let would = model;
@@ -678,15 +799,24 @@ async function shadowClassifyAndLog(
       fb = session.result.fallback;
       sticky = session.sticky;
       sess = session.session;
-      const selection = selectTierCombo(session.result, config);
-      would =
-        config.policy === "downgrade"
-          ? result.tier === "coding" && !fb && result.confidence >= config.downgradeMinConf
-            ? config.downgradeTo
-            : model
-          : model === config.virtualModel
-            ? selection.combo
-            : model;
+      const classifierSays =
+        result.tier === "coding" &&
+        !result.fallback &&
+        result.confidence >= config.downgradeMinConf;
+      if (config.policy === "downgrade") {
+        const down =
+          config.decider === "rule"
+            ? rule.down
+            : config.decider === "both"
+              ? classifierSays && rule.down
+              : classifierSays;
+        would = down ? config.downgradeTo : model;
+      } else {
+        would =
+          model === config.virtualModel ? selectTierCombo(session.result, config).combo : model;
+      }
+    } else if (config.policy === "downgrade" && config.decider === "rule") {
+      would = rule.down ? config.downgradeTo : model;
     }
     logModelRouterDecision({
       policy: "shadow",
@@ -699,6 +829,8 @@ async function shadowClassifyAndLog(
       sess,
       ms,
       applied: false,
+      rule: ruleDecision,
+      ruleLen: rule.len,
     });
   } catch {
     /* fire-and-forget: shadow logging must never break the request */

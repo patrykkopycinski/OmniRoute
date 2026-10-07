@@ -23,6 +23,7 @@ export default defineConfig({
       "tests/unit/encryption.spec.ts",
       "tests/unit/model-router-parity.test.ts",
       "tests/unit/model-router-downgrade-shadow.test.ts",
+      "tests/unit/model-router-rule.test.ts",
       "src/shared/components/**/*.test.tsx",
       "src/shared/hooks/__tests__/**/*.test.tsx",
       "src/app/(dashboard)/**/__tests__/**/*.test.tsx",
