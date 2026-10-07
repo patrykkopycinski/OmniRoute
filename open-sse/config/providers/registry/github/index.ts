@@ -161,6 +161,30 @@ export const githubProvider: RegistryEntry = {
       maxOutputTokens: 64000,
     },
     {
+      id: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      targetFormat: "openai-responses",
+      maxOutputTokens: 128000,
+    },
+    {
+      id: "gpt-6-sol",
+      name: "GPT-6 Sol",
+      targetFormat: "openai-responses",
+      maxOutputTokens: 128000,
+    },
+    {
+      id: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      targetFormat: "openai-responses",
+      maxOutputTokens: 128000,
+    },
+    {
+      id: "gpt-6-astra",
+      name: "GPT-6 Astra",
+      targetFormat: "openai-responses",
+      maxOutputTokens: 128000,
+    },
+    {
       id: "gpt-5.6-sol",
       name: "GPT-5.6 Sol",
       supportsReasoning: true,

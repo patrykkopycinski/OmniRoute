@@ -78,6 +78,7 @@ import {
   isContextOverflow400,
   isParamValidation400,
   isModelScoped400,
+  isEndpointRouting400,
 } from "./combo/comboPredicates.ts";
 export {
   getConnectionStatusQuotaCutoffReason,
@@ -86,6 +87,7 @@ export {
   isContextOverflow400,
   isParamValidation400,
   isModelScoped400,
+  isEndpointRouting400,
 };
 import {
   applyNativeCodexTurnPin,

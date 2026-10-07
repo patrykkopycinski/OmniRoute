@@ -157,6 +157,36 @@ function isRouteContextWord(value: string): boolean {
   return value === "Route" || (HTTP_METHODS as readonly string[]).includes(value);
 }
 
+// Upstream provider API endpoints (the path half of "not accessible via the
+// /chat/completions endpoint"). They are the one useful detail in a routing 400 and
+// are not filesystem paths, so they are shielded from redaction like Route/HTTP-method
+// context. Matched as a whole path segment so `/responses-secret/x` or
+// `/chat/completions/../etc` style suffixes are not exempted.
+const UPSTREAM_API_ENDPOINTS = [
+  "/chat/completions",
+  "/responses",
+  "/v1/messages",
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/completions",
+  "/embeddings",
+] as const;
+
+function isUpstreamApiEndpointAt(value: string, index: number): boolean {
+  for (const endpoint of UPSTREAM_API_ENDPOINTS) {
+    if (!value.startsWith(endpoint, index)) continue;
+    const next = value.charAt(index + endpoint.length);
+    if (next === "" || isWhitespace(next) || PATH_SPAN_END_PUNCTUATION.includes(next)) {
+      // `.` / `:` etc. only count as a terminator when not followed by more path text
+      // (`/responses.ts` is a file; `/responses.` ends a sentence).
+      const after = value.charAt(index + endpoint.length + 1);
+      if (next === "." && after !== "" && !isWhitespace(after)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 function hasRouteContextBefore(value: string, candidateIndex: number): boolean {
   let index = candidateIndex - 1;
   while (
@@ -281,7 +311,7 @@ function redactQuotedAbsolutePaths(value: string): string {
     const isShieldedRoute =
       value.charCodeAt(candidateStart) === 0x2f &&
       !isWindowsAbsolutePathAt(value, candidateStart) &&
-      hasRouteContextBefore(value, index);
+      (hasRouteContextBefore(value, index) || isUpstreamApiEndpointAt(value, candidateStart));
     // Route/API contexts use their first closing quote so a later quoted
     // filesystem path is still scanned independently. Filesystem candidates
     // take the last matching quote on the line: POSIX filenames may themselves
@@ -616,6 +646,7 @@ function redactUnquotedAbsolutePathSpans(value: string): string {
       value.charCodeAt(index) === 0x2f &&
       value.charCodeAt(index + 1) !== 0x2f &&
       !hasRouteContextBefore(value, index) &&
+      !isUpstreamApiEndpointAt(value, index) &&
       isUnquotedPosixSpanCandidateAt(value, index);
     const hasBoundary = hasCommonBoundary || (isWindowsPath && previous === ":");
     if (!hasBoundary || (!isWindowsPath && !isFileUriPath && !isPosixPath)) {

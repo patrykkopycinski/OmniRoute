@@ -1,5 +1,6 @@
 import { generateModels, generateAliasMap, type RegistryModel } from "./providerRegistry.ts";
 import { getVertexModelTargetFormat } from "./vertexModels.ts";
+import { isCopilotResponsesOnlyModel } from "./copilotEndpointSupport.ts";
 
 // Lazy PROVIDER_MODELS: deferred until first property access to speed up startup.
 // The Proxy defers `generateModels()` from module-evaluation time to the first read.
@@ -243,6 +244,9 @@ export function getModelTargetFormat(aliasOrId: string, modelId: string): string
   const bareModelId = prefix ? modelId.slice(prefix.length) : modelId;
   const found = PROVIDER_MODELS[alias]?.find((m) => m.id === bareModelId);
   if (found?.targetFormat) return found.targetFormat;
+  // GitHub Copilot: discovery (supported_endpoints without /chat/completions) marks a model
+  // Responses-only even when the static catalog has no entry for it yet (gpt-6*).
+  if (alias === "gh" && isCopilotResponsesOnlyModel(bareModelId)) return "openai-responses";
   // Resolved models can still carry the raw provider id (for example
   // "opencode/muse-spark-1.3-contributor-free") even when the public alias is
   // "oc". Match the family against the final model segment so both forms work.

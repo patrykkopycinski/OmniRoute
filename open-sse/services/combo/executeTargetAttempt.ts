@@ -68,6 +68,7 @@ import {
   resolveDelayMs,
   resolvePersistedConnectionCooldownSkipReason,
   isModelScoped400,
+  isEndpointRouting400,
   requestScopedReplayKey,
 } from "./comboPredicates.ts";
 import { applyComboTargetExhaustion } from "./targetExhaustion.ts";
@@ -968,7 +969,13 @@ export async function executeTargetAttempt(opts: {
     // upstream 400s on the same GitHub models, all day). isModelLocked()
     // is checked before dispatch (see the pre-check above this loop), so
     // this lockout is honored on the next request.
-    if (result.status === 400 && isModelScoped400(errorText) && provider && rawModel) {
+    if (
+      result.status === 400 &&
+      isModelScoped400(errorText) &&
+      !isEndpointRouting400(errorText) &&
+      provider &&
+      rawModel
+    ) {
       lockModelIfPerModelQuota(
         provider,
         targetWithConnection.connectionId || "",

@@ -136,6 +136,7 @@ import { checkResourcePressureGuard } from "../utils/resourcePressure.ts";
 import { normalizeHeaders } from "../utils/headers.ts";
 import { resolveChatCoreRequestFormat } from "./chatCore/requestFormat.ts";
 import { resolveChatCoreTargetFormat } from "./chatCore/targetFormat.ts";
+import { ensureCopilotEndpointsDiscovered } from "../services/githubCopilotModels.ts";
 import { resolveOmniGlyphTransport } from "../services/compression/imageTransportPolicy.ts";
 import { stripStore, usesClaudeBridge } from "./chatCore/agentRouterProtocol.ts";
 import { normalizeClaudeToolsForDispatch } from "./chatCore/claudeToolDefaults.ts";
@@ -912,6 +913,21 @@ async function handleChatCoreInner({
     if (effortVariant.log) {
       log?.info?.("PARAMS", effortVariant.log);
     }
+  }
+
+  // GitHub Copilot: models absent from the static registry (e.g. a freshly shipped gpt-6*)
+  // may be Responses-only (`supported_endpoints` lacks /chat/completions). Learn that from
+  // Copilot's live /models BEFORE the wire format is resolved, or they 400 on /chat/completions.
+  if (provider === "github" && credentials) {
+    await ensureCopilotEndpointsDiscovered({
+      model: resolvedModel,
+      tokens: [
+        (credentials as { copilotToken?: string }).copilotToken,
+        (credentials as { providerSpecificData?: { copilotToken?: string } }).providerSpecificData
+          ?.copilotToken,
+        (credentials as { accessToken?: string }).accessToken,
+      ],
+    });
   }
 
   // Wire target-format resolution extracted to chatCore/targetFormat.ts (#3501); `alias` is reused
