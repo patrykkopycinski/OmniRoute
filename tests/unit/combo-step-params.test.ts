@@ -68,6 +68,48 @@ test("params: thinking off PRESERVES existing extra_body keys", () => {
   assert.equal(body.chat_template_kwargs.enable_thinking, false);
 });
 
+test("params: nested writes preserve shared input and isolate fallback attempts", () => {
+  const shared = {
+    chat_template_kwargs: { enable_thinking: true, custom: "keep" },
+    extra_body: {
+      client: "keep",
+      chat_template_kwargs: { enable_thinking: true, nested: "keep" },
+    },
+  };
+  const before = structuredClone(shared);
+  const firstAttempt = { ...shared };
+  applyComboStepParams(firstAttempt, { thinking: "off", extraBody: { firstOnly: true } });
+  assert.deepEqual(shared, before);
+  assert.equal(firstAttempt.chat_template_kwargs.enable_thinking, false);
+  assert.equal(firstAttempt.extra_body.chat_template_kwargs.enable_thinking, false);
+  assert.equal(firstAttempt.extra_body.chat_template_kwargs.nested, "keep");
+
+  const fallbackAttempt = { ...shared };
+  applyComboStepParams(fallbackAttempt, undefined);
+  assert.deepEqual(fallbackAttempt, before);
+  applyComboStepParams(fallbackAttempt, { extraBody: { fallbackOnly: true } });
+  assert.deepEqual(shared, before);
+  assert.equal(fallbackAttempt.chat_template_kwargs.enable_thinking, true);
+  assert.equal(fallbackAttempt.extra_body.chat_template_kwargs.enable_thinking, true);
+  assert.equal("firstOnly" in fallbackAttempt.extra_body, false);
+  assert.equal("fallbackOnly" in firstAttempt.extra_body, false);
+});
+
+test("params: thinking off clones kwargs supplied by step params", () => {
+  const params = {
+    thinking: "off" as const,
+    extraBody: { chat_template_kwargs: { enable_thinking: true, custom: "keep" } },
+  };
+  const before = structuredClone(params);
+  const body: Record<string, unknown> = {};
+  applyComboStepParams(body, params);
+  assert.deepEqual(params, before);
+  assert.deepEqual((body.extra_body as Record<string, unknown>).chat_template_kwargs, {
+    enable_thinking: false,
+    custom: "keep",
+  });
+});
+
 // ─── applyComboStepParams: extraBody merge ───
 
 test("params: extraBody shallow-merges per key, step value wins", () => {

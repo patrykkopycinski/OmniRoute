@@ -37,8 +37,6 @@ export type ComboStepParams = {
 
 const TEMPLATE_KWARGS = "chat_template_kwargs";
 
-/** Apply per-step params to a per-attempt request body (copy-on-write safe:
- *  callers pass their per-attempt copy; we mutate it in place and return it). */
 // stripResponseFormat: removes response_format before the request leaves the
 // gateway. Reason: SGLang 0.5.19's xgrammar structured-output path aborts
 // generations (finish_reason:"abort", 3-char content) under concurrent load —
@@ -49,6 +47,7 @@ export function applyStripResponseFormat(body: Record<string, unknown>): void {
   if ("response_format" in body) delete body.response_format;
 }
 
+/** Mutate the per-attempt body, cloning nested containers before writing them. */
 export function applyComboStepParams(
   body: Record<string, unknown>,
   params: ComboStepParams | null | undefined
@@ -68,6 +67,15 @@ export function applyComboStepParams(
     }
   }
 
+  // Clone the extra_body container before any per-step writes.
+  if (params.extraBody && typeof params.extraBody === "object") {
+    const extra = { ...(body.extra_body as Record<string, unknown> | undefined) };
+    for (const [k, v] of Object.entries(params.extraBody)) {
+      if (v !== undefined) extra[k] = v;
+    }
+    body.extra_body = extra;
+  }
+
   // 2. Thinking off — SGLang chat_template_kwargs, never reasoning_effort.
   //    Wire shape matters: over raw HTTP SGLang/vLLM read chat_template_kwargs
   //    as a FLAT top-level body field; the extra_body wrapper is an OpenAI
@@ -76,24 +84,20 @@ export function applyComboStepParams(
   //    qwen3.8-27b cells: flat -> 2 completion tokens; nested -> thinking runs).
   //    We emit BOTH: flat for raw HTTP, extra_body for SDK-style consumers.
   if (params.thinking === "off") {
-    const kwargs = (body[TEMPLATE_KWARGS] as Record<string, unknown> | undefined) ?? {};
-    kwargs.enable_thinking = false;
+    const kwargs = {
+      ...(body[TEMPLATE_KWARGS] as Record<string, unknown> | undefined),
+      enable_thinking: false,
+    };
     body[TEMPLATE_KWARGS] = kwargs;
-    const extra = (body.extra_body as Record<string, unknown> | undefined) ?? {};
-    extra[TEMPLATE_KWARGS] = { ...kwargs };
+    const extra = { ...(body.extra_body as Record<string, unknown> | undefined) };
+    extra[TEMPLATE_KWARGS] = {
+      ...(extra[TEMPLATE_KWARGS] as Record<string, unknown> | undefined),
+      ...kwargs,
+    };
     body.extra_body = extra;
     // Drop any client effort knob for this step: an explicit effort on the body
     // could re-enable provider-side thinking on effort-aware upstreams.
     delete body.reasoning_effort;
-  }
-
-  // 3. Arbitrary extra_body merge — step value wins per key.
-  if (params.extraBody && typeof params.extraBody === "object") {
-    const extra = (body.extra_body as Record<string, unknown> | undefined) ?? {};
-    for (const [k, v] of Object.entries(params.extraBody)) {
-      if (v !== undefined) extra[k] = v;
-    }
-    body.extra_body = extra;
   }
 
   // 4. stripResponseFormat — drop response_format before the request leaves
