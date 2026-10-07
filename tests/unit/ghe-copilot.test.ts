@@ -182,13 +182,16 @@ test("models this PR did not move keep chat-completions bodies and URLs", () => 
     assert.equal(sent.input, undefined, `${model} must not be rewritten to Responses input`);
   }
 
-  // github.com Copilot did not gain the gpt-6 URL regex. Its body stays chat.
-  assert.equal(getModelTargetFormat("gh", "gpt-6-luna"), null);
-  assert.equal(getModelTargetFormat("github", "gpt-6-luna"), null);
+  // Fork divergence (prod 2ad864e518, gh-responses): github.com Copilot registers
+  // gpt-6* as Responses-only (live `supported_endpoints` lacks /chat/completions),
+  // so unlike upstream #15499 its URL and body DO move to /responses. Pin the
+  // fork behavior here; the GHE assertions above are unchanged.
+  assert.equal(getModelTargetFormat("gh", "gpt-6-luna"), "openai-responses");
+  assert.equal(getModelTargetFormat("github", "gpt-6-luna"), "openai-responses");
   const github = new GithubExecutor();
   assert.equal(
     github.buildUrl("gpt-6-luna", true, 0, { apiKey: "test-token" }),
-    "https://api.githubcopilot.com/chat/completions"
+    "https://api.githubcopilot.com/responses"
   );
 });
 

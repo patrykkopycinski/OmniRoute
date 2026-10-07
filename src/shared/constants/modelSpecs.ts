@@ -418,7 +418,7 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     adaptiveThinkingOnly: true,
     rejectsThinkingDisabled: true,
     rejectsForcedToolChoice: true,
-    aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-5-5"),
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-5-5", "claude-sonnet-5.5"),
   },
 
   // ── Claude Opus 4.6 ─────────────────────────────────────────────
@@ -513,21 +513,6 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     rejectsThinkingDisabled: true,
     adaptiveThinkingOnly: true,
     aliases: BEDROCK_CLAUDE_ALIASES("claude-opus-5-5", "claude-opus-5.5"),
-  },
-
-  // ── Claude Sonnet 5.5 ───────────────────────────────────────────
-  "claude-sonnet-5-5": {
-    maxOutputTokens: 128000,
-    contextWindow: 1000000,
-    defaultThinkingBudget: 32000,
-    thinkingBudgetCap: 120000,
-    supportsThinking: true,
-    supportsTools: true,
-    supportsVision: true,
-    // Sonnet 5 accepts `disabled`, but 5.5 follows Opus 5.5 and rejects it.
-    rejectsThinkingDisabled: true,
-    adaptiveThinkingOnly: true,
-    aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-5-5", "claude-sonnet-5.5"),
   },
 
   // ── Claude Opus 4.8 ─────────────────────────────────────────────
