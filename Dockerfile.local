@@ -46,6 +46,18 @@ COPY node_modules/better-sqlite3/node_modules ./node_modules/better-sqlite3/node
 # copy (deterministic, ships with node:24, no extra install/network fetch).
 RUN cd node_modules/better-sqlite3 && npx --yes node-gyp rebuild --release
 
+# Platform-gated native optionals (sharp, wreq-js, ngrok, sqlite-vec, ...):
+# the host-built standalone only carries the DARWIN variants npm picked on
+# macOS (e.g. @img/sharp-darwin-arm64), so in this linux container
+# require("sharp") throws "Could not load the sharp module using the
+# linux-arm64 runtime" and every cursor/* image request 500s. Install the
+# pinned linux variant of every optionalDependency that targets THIS
+# platform and is missing, then fail the build if a native module still
+# cannot load (the app otherwise boots fine and only 500s at request time).
+COPY scripts/docker/install-linux-native-optionals.mjs scripts/docker/verify-native-modules.mjs /tmp/native/
+RUN node /tmp/native/install-linux-native-optionals.mjs node_modules \
+  && node /tmp/native/verify-native-modules.mjs
+
 # Healthcheck
 COPY scripts/dev/healthcheck.mjs ./healthcheck.mjs
 
