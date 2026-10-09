@@ -28,6 +28,11 @@ export const comboModelStepInputSchema = z.object({
   connectionId: z.string().trim().min(1).max(200).nullable().optional(),
   allowedConnectionIds: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+  // Optional per-hop timeout (ms) for this model step. When set, it overrides the
+  // combo-wide `config.targetTimeoutMs` AND the connection's timeout ceiling for
+  // THIS hop only — see open-sse/services/combo/targetTimeoutRunner.ts. `0`
+  // disables the hop timeout. Unset = current behaviour (combo-wide/ceiling).
+  timeoutMs: z.coerce.number().int().min(0).max(MAX_TIMER_TIMEOUT_MS).optional(),
   // Pipeline strategy (open-sse/services/pipeline.ts): an optional per-step
   // instruction. Steps run in `models` order — each step's output feeds the next
   // step's input, and this `prompt` is injected as that step's system instruction.

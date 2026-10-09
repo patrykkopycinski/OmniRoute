@@ -108,11 +108,28 @@ export function buildTargetTimeoutRunner(deps: {
     modelStr: string,
     target?: SingleModelTarget
   ): Promise<Response> => {
+    // Per-hop `timeoutMs` set on the model step wins over everything — the
+    // combo-wide `targetTimeoutMs` and the connection timeout ceiling. It is a
+    // deliberate operator decision scoped to ONE hop (e.g. best-cheap Cursor's
+    // 8s cu/claude-haiku-5-5 bound), so it is NOT capped by the ceiling: capping
+    // would silently re-introduce exactly the slow-hop stall this field exists
+    // to cut. `0` disables the hop timeout (G3 passthrough below).
+    // Semantics: as with the combo-wide timer, the abort races the FULL dispatch
+    // (handleSingleModel promise), so in practice it bounds time-to-response of
+    // the hop — a stream that already produced its Response object settles the
+    // race first and is never cut mid-response.
+    const targetHopTimeoutMs = target && "timeoutMs" in target ? target.timeoutMs : undefined;
+    const hopTimeoutMs =
+      typeof targetHopTimeoutMs === "number" && Number.isFinite(targetHopTimeoutMs)
+        ? targetHopTimeoutMs
+        : null;
     const resolvedTimeoutMs = await resolveTargetTimeoutMs?.(target);
     const effectiveTimeoutMs =
-      typeof resolvedTimeoutMs === "number" && Number.isFinite(resolvedTimeoutMs)
-        ? resolvedTimeoutMs
-        : comboTargetTimeoutMs;
+      hopTimeoutMs !== null
+        ? hopTimeoutMs
+        : typeof resolvedTimeoutMs === "number" && Number.isFinite(resolvedTimeoutMs)
+          ? resolvedTimeoutMs
+          : comboTargetTimeoutMs;
     if (effectiveTimeoutMs <= 0) {
       // G3 (silent-stop fix): a disabled per-model timeout means a hung upstream
       // stalls the target until the combo loop safety timer (COMBO_LOOP_SAFETY_TIMEOUT_MS)

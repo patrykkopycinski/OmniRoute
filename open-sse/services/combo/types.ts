@@ -236,6 +236,13 @@ export type ResolvedComboTarget = {
    * See ./stepParams.ts for the full contract.
    */
   params?: ComboStepParams | null;
+  /**
+   * Per-hop timeout override (ms) set on the model step (`timeoutMs` in the
+   * combo schema). When present it wins over the combo-wide
+   * `config.targetTimeoutMs` AND the connection timeout ceiling for this hop
+   * only; `0` disables the hop timeout. See targetTimeoutRunner.ts.
+   */
+  timeoutMs?: number;
   failoverBeforeRetry?: unknown;
   fallbackOnlyOnQuotaExhaustion?: boolean;
   trafficType?: "production" | "shadow";

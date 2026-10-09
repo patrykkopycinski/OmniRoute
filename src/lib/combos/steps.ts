@@ -5,6 +5,8 @@
  * @changes
  * - [2026-07-25] [Composer] - Preserve provider-wildcard steps during combo normalization
  */
+import { MAX_TIMER_TIMEOUT_MS } from "@/shared/utils/runtimeTimeouts";
+
 type JsonRecord = Record<string, unknown>;
 
 export const COMBO_SCHEMA_VERSION = 2;
@@ -24,6 +26,12 @@ export interface ComboModelStep {
   weight: number;
   label?: string;
   prompt?: string | null;
+  /**
+   * Per-hop timeout override (ms). Wins over combo-wide `targetTimeoutMs` and the
+   * connection ceiling for this hop only; 0 disables the hop timeout. Unset =
+   * unchanged behaviour.
+   */
+  timeoutMs?: number;
   tags?: string[];
   fallbackOnlyOnQuotaExhaustion?: boolean;
   /**
@@ -340,6 +348,15 @@ export function normalizeComboStep(
     value.params && typeof value.params === "object" && !Array.isArray(value.params)
       ? (value.params as NonNullable<ComboModelStep["params"]>)
       : undefined;
+  const rawTimeoutMs = Number(value.timeoutMs);
+  const timeoutMs =
+    value.timeoutMs !== undefined &&
+    value.timeoutMs !== null &&
+    value.timeoutMs !== "" &&
+    Number.isInteger(rawTimeoutMs) &&
+    rawTimeoutMs >= 0
+      ? Math.min(rawTimeoutMs, MAX_TIMER_TIMEOUT_MS)
+      : undefined;
 
   if (value.kind === "combo-ref") {
     const comboRefName = toTrimmedString(value.comboName);
@@ -463,6 +480,7 @@ export function normalizeComboStep(
     ...(label ? { label } : {}),
     ...(prompt ? { prompt } : {}),
     ...(params ? { params } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(tags && tags.length > 0 ? { tags } : {}),
     ...(allowedConnectionIds && allowedConnectionIds.length > 0 ? { allowedConnectionIds } : {}),
     ...(fallbackOnlyOnQuotaExhaustion ? { fallbackOnlyOnQuotaExhaustion: true } : {}),

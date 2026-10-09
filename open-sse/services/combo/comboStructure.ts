@@ -157,6 +157,13 @@ function normalizeRuntimeStep(
     prompt: (step.kind === "model" ? step.prompt : null) || null,
     // feat/combo-step-params: carry per-step params onto the resolved target.
     ...(step.kind === "model" && step.params ? { params: step.params } : {}),
+    // Optional per-hop timeout override (ms). Present only when the operator set
+    // `timeoutMs` on this model step; consumed by the combo per-target timeout
+    // runner (open-sse/services/combo/targetTimeoutRunner.ts), where it wins over
+    // the combo-wide `targetTimeoutMs` and the connection timeout ceiling.
+    ...(step.kind === "model" && step.timeoutMs !== undefined
+      ? { timeoutMs: step.timeoutMs }
+      : {}),
     ...(step.kind === "model" && step.fallbackOnlyOnQuotaExhaustion
       ? { fallbackOnlyOnQuotaExhaustion: true }
       : {}),
