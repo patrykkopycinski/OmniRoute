@@ -1,4 +1,8 @@
-import { applyLiteCompression, isUsableLiteMaxToolLength } from "../lite.ts";
+import {
+  applyLiteCompression,
+  isUsableLiteExemptToolNames,
+  isUsableLiteMaxToolLength,
+} from "../lite.ts";
 import { cavemanCompress } from "../caveman.ts";
 import { compressAggressive } from "../aggressive.ts";
 import { ultraCompressHeuristic } from "../ultra.ts";
@@ -228,6 +232,12 @@ function validateLiteConfig(config: Record<string, unknown>): EngineValidationRe
   }
   validateBoolean(config, "compressToolResults", errors);
   validateNumberRange(config, "maxToolLength", 256, 1_000_000, errors);
+  if (
+    config.exemptToolNames !== undefined &&
+    !isUsableLiteExemptToolNames(config.exemptToolNames)
+  ) {
+    errors.push("exemptToolNames must be an array of up to 64 non-empty strings (max 128 chars)");
+  }
   return { valid: errors.length === 0, errors };
 }
 
@@ -257,6 +267,8 @@ export const liteEngine: CompressionEngine = {
     const stepCompressToolResults = options?.stepConfig?.compressToolResults;
     const stepMaxToolLength = options?.stepConfig?.maxToolLength;
     const configMaxToolLength = options?.config?.lite?.maxToolLength;
+    const stepExemptToolNames = options?.stepConfig?.exemptToolNames;
+    const configExemptToolNames = options?.config?.lite?.exemptToolNames;
     const result = applyLiteCompression(adapter.body, {
       ...options,
       preserveSystemPrompt: options?.config?.preserveSystemPrompt !== false,
@@ -271,6 +283,11 @@ export const liteEngine: CompressionEngine = {
         ? Math.floor(stepMaxToolLength)
         : isUsableLiteMaxToolLength(configMaxToolLength)
           ? Math.floor(configMaxToolLength)
+          : undefined,
+      exemptToolNames: isUsableLiteExemptToolNames(stepExemptToolNames)
+        ? stepExemptToolNames
+        : isUsableLiteExemptToolNames(configExemptToolNames)
+          ? configExemptToolNames
           : undefined,
     });
     return adapter.adapted ? { ...result, body: adapter.restore(result.body) } : result;

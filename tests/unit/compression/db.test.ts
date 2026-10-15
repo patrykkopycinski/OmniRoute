@@ -122,6 +122,47 @@ describe("updateCompressionSettings", () => {
     assert.equal(settings.lite?.maxToolLength, undefined);
   });
 
+  it("persists Lite exemptToolNames and keeps them across a toggle-only or cap-only write", async () => {
+    await updateCompressionSettings({
+      lite: {
+        compressToolResults: true,
+        maxToolLength: 8000,
+        exemptToolNames: ["clarify", "pager"],
+      },
+    });
+    core.resetDbInstance();
+    assert.deepEqual((await getCompressionSettings()).lite?.exemptToolNames, ["clarify", "pager"]);
+
+    await updateCompressionSettings({ lite: { compressToolResults: false } });
+    core.resetDbInstance();
+    assert.deepEqual((await getCompressionSettings()).lite?.exemptToolNames, ["clarify", "pager"]);
+
+    await updateCompressionSettings({
+      lite: { compressToolResults: true, maxToolLength: null },
+    } as Parameters<typeof updateCompressionSettings>[0]);
+    core.resetDbInstance();
+    const settings = await getCompressionSettings();
+    assert.equal(settings.lite?.maxToolLength, undefined);
+    assert.deepEqual(settings.lite?.exemptToolNames, ["clarify", "pager"]);
+  });
+
+  it("replaces Lite exemptToolNames on an explicit write, including an empty list", async () => {
+    await updateCompressionSettings({
+      lite: { compressToolResults: true, exemptToolNames: ["a"] },
+    });
+    await updateCompressionSettings({
+      lite: { compressToolResults: true, exemptToolNames: [] },
+    });
+    core.resetDbInstance();
+    assert.deepEqual((await getCompressionSettings()).lite?.exemptToolNames, []);
+  });
+
+  it("leaves Lite exemptToolNames unset when nothing was stored (engine default applies)", async () => {
+    await updateCompressionSettings({ lite: { compressToolResults: true, maxToolLength: 8000 } });
+    core.resetDbInstance();
+    assert.equal((await getCompressionSettings()).lite?.exemptToolNames, undefined);
+  });
+
   describe("a partial cavemanOutputMode write", () => {
     const writeThenRead = async (cavemanOutputMode: Partial<CavemanOutputModeConfig>) => {
       core.resetDbInstance();

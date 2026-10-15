@@ -318,12 +318,32 @@ export function adaptBodyForCompression(
   const mappings: Array<{ index: number; item: ResponsesItem }> = [];
   const messages: MessageLike[] = [];
 
+  // Responses tool outputs carry only call_id; expose the originating call's tool name on the
+  // synthetic tool message so name-based exemptions (lite exemptToolNames) also hit this path.
+  // restore() rebuilds from the original item, so this field never reaches the upstream body.
+  const callNames = new Map<string, string>();
+  for (const raw of inputItems) {
+    if (!isRecord(raw)) continue;
+    if (raw.type !== "function_call" && raw.type !== "custom_tool_call") continue;
+    if (typeof raw.call_id === "string" && typeof raw.name === "string" && raw.name) {
+      callNames.set(raw.call_id, raw.name);
+    }
+  }
+
   inputItems.forEach((item, index) => {
     if (!isRecord(item)) return;
     const message = responsesItemToMessage(item);
     if (!message || !hasCompressibleContent(message)) return;
     mappings.push({ index, item: item as ResponsesItem });
-    messages.push({ ...message, [COMPRESSION_INPUT_INDEX]: index });
+    const toolName =
+      message.role === "tool" && typeof item.call_id === "string"
+        ? callNames.get(item.call_id)
+        : undefined;
+    messages.push({
+      ...message,
+      ...(toolName ? { name: toolName } : {}),
+      [COMPRESSION_INPUT_INDEX]: index,
+    });
   });
 
   markCodexResponseEligibility(messages, inputItems, preserveToolNames);

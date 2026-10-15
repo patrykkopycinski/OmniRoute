@@ -42,7 +42,10 @@ import {
   normalizePreserveSystemPromptMode,
 } from "@omniroute/open-sse/services/compression/preserveSystemPromptMode.ts";
 import { maybePrewarmUltraSlmOnConfig } from "@omniroute/open-sse/services/compression/ultra.ts";
-import { isUsableLiteMaxToolLength } from "@omniroute/open-sse/services/compression/lite.ts";
+import {
+  isUsableLiteExemptToolNames,
+  isUsableLiteMaxToolLength,
+} from "@omniroute/open-sse/services/compression/lite.ts";
 import { applyDetailConfigUpdate, buildDetailConfigDefaults } from "./compressionDetailNormalizers";
 
 const NAMESPACE = "compression";
@@ -560,13 +563,20 @@ function mergeEnginesForWrite(
 function mergeLiteSettingsForWrite(
   db: ReturnType<typeof getDbInstance>,
   value: unknown
-): { compressToolResults: boolean; maxToolLength?: number } {
+): { compressToolResults: boolean; maxToolLength?: number; exemptToolNames?: string[] } {
   const incoming = toRecord(value);
   const existingRow = db
     .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
     .get(NAMESPACE, "lite") as { value: string } | undefined;
   const existing = toRecord(parseJsonSafe(existingRow?.value ?? null));
   const existingCap = usableLiteMaxToolLength(existing.maxToolLength);
+  // Omitted keeps the stored list; an explicit valid list (including []) replaces it.
+  const exemptToolNames = isUsableLiteExemptToolNames(incoming.exemptToolNames)
+    ? incoming.exemptToolNames
+    : isUsableLiteExemptToolNames(existing.exemptToolNames)
+      ? existing.exemptToolNames
+      : undefined;
+  const exemptPart = exemptToolNames !== undefined ? { exemptToolNames } : {};
   const compressToolResults =
     typeof incoming.compressToolResults === "boolean"
       ? incoming.compressToolResults
@@ -575,18 +585,20 @@ function mergeLiteSettingsForWrite(
     return {
       compressToolResults,
       ...(existingCap !== undefined ? { maxToolLength: existingCap } : {}),
+      ...exemptPart,
     };
   }
   if (incoming.maxToolLength === null) {
-    return { compressToolResults };
+    return { compressToolResults, ...exemptPart };
   }
   const nextCap = usableLiteMaxToolLength(incoming.maxToolLength);
   if (nextCap !== undefined) {
-    return { compressToolResults, maxToolLength: nextCap };
+    return { compressToolResults, maxToolLength: nextCap, ...exemptPart };
   }
   return {
     compressToolResults,
     ...(existingCap !== undefined ? { maxToolLength: existingCap } : {}),
+    ...exemptPart,
   };
 }
 
@@ -861,6 +873,9 @@ export async function getCompressionSettings(): Promise<CompressionConfig> {
         config.lite = {
           compressToolResults: liteRecord.compressToolResults !== false,
           ...(storedCap !== undefined ? { maxToolLength: storedCap } : {}),
+          ...(isUsableLiteExemptToolNames(liteRecord.exemptToolNames)
+            ? { exemptToolNames: liteRecord.exemptToolNames }
+            : {}),
         };
         break;
       }

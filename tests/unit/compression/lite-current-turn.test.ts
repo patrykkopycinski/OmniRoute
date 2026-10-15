@@ -51,7 +51,7 @@ describe("lite tool-result truncation and the current turn", () => {
       ],
     });
     assert.equal(applied, true);
-    assert.match(String(body.messages![2].content), /\.\.\.\[truncated\]$/);
+    assert.match(String(body.messages![2].content), /\.\.\.\[truncated \d+ of \d+ chars\]$/);
     assert.equal(body.messages![4].content, FILE);
   });
 

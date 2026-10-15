@@ -84,7 +84,7 @@ describe("compressToolResults", () => {
     assert.equal(result.applied, true);
     const content = result.body.messages![0].content as string;
     assert.ok(content.length < 3000);
-    assert.ok(content.includes("[truncated]"));
+    assert.match(content, /\[truncated \d+ of \d+ chars\]/);
   });
 
   it("keeps short tool results unchanged", () => {
@@ -104,9 +104,9 @@ describe("compressToolResults", () => {
     const result = compressToolResults(body, { maxToolLength: 500 });
     assert.equal(result.applied, true);
     const content = result.body.messages![0].content as string;
-    assert.ok(content.endsWith("\n...[truncated]"));
+    assert.match(content, /\n\.\.\.\[truncated \d+ of \d+ chars\]$/);
     assert.ok(content.length < 800);
-    assert.ok(content.length <= 500 + "\n...[truncated]".length);
+    assert.ok(content.length <= 500 + 40);
   });
 
   it("keeps a 1500-char tool result when maxToolLength is 4000", () => {
@@ -124,8 +124,8 @@ describe("compressToolResults", () => {
       const result = compressToolResults(body);
       assert.equal(result.applied, true);
       const content = result.body.messages![0].content as string;
-      assert.ok(content.endsWith("\n...[truncated]"));
-      assert.ok(content.length <= 400 + "\n...[truncated]".length);
+      assert.match(content, /\n\.\.\.\[truncated \d+ of \d+ chars\]$/);
+      assert.ok(content.length <= 400 + 40);
     } finally {
       if (previous === undefined) delete process.env.OMNIROUTE_LITE_MAX_TOOL_LENGTH;
       else process.env.OMNIROUTE_LITE_MAX_TOOL_LENGTH = previous;
@@ -269,7 +269,7 @@ describe("stacked Lite precedence (global config vs explicit step)", () => {
     const messages = result.body.messages as Array<{ content: string }>;
     assert.equal(messages[0].content, toolContent.trimEnd());
     assert.ok(messages[0].content.length > 2000);
-    assert.doesNotMatch(messages[0].content, /\[truncated\]/);
+    assert.doesNotMatch(messages[0].content, /\[truncated \d+ of \d+ chars\]/);
     assert.ok(!result.stats?.techniquesUsed.includes("tool-compress"));
   });
 
@@ -286,7 +286,7 @@ describe("stacked Lite precedence (global config vs explicit step)", () => {
       }
     );
     const messages = result.body.messages as Array<{ content: string }>;
-    assert.match(messages[0].content, /\.\.\.\[truncated\]$/);
+    assert.match(messages[0].content, /\.\.\.\[truncated \d+ of \d+ chars\]$/);
     assert.ok(messages[0].content.length < toolContent.length);
     assert.ok(result.stats?.techniquesUsed.includes("tool-compress"));
   });
@@ -305,7 +305,7 @@ describe("stacked Lite precedence (global config vs explicit step)", () => {
     );
     const messages = result.body.messages as Array<{ content: string }>;
     assert.equal(messages[0].content, toolContent.trimEnd());
-    assert.doesNotMatch(messages[0].content, /\[truncated\]/);
+    assert.doesNotMatch(messages[0].content, /\[truncated \d+ of \d+ chars\]/);
     assert.ok(!result.stats?.techniquesUsed.includes("tool-compress"));
   });
 
@@ -325,7 +325,7 @@ describe("stacked Lite precedence (global config vs explicit step)", () => {
     );
     const messages = result.body.messages as Array<{ content: string }>;
     assert.equal(messages[0].content, toolContent.trimEnd());
-    assert.doesNotMatch(messages[0].content, /\[truncated\]/);
+    assert.doesNotMatch(messages[0].content, /\[truncated \d+ of \d+ chars\]/);
     assert.ok(!result.stats?.techniquesUsed.includes("tool-compress"));
   });
 
@@ -336,7 +336,7 @@ describe("stacked Lite precedence (global config vs explicit step)", () => {
       { config: { ...baseConfig, stackedPipeline: [liteStep] } }
     );
     const messages = result.body.messages as Array<{ content: string }>;
-    assert.match(messages[0].content, /\.\.\.\[truncated\]$/);
+    assert.match(messages[0].content, /\.\.\.\[truncated \d+ of \d+ chars\]$/);
   });
 
   it("an out-of-range step maxToolLength does not hide a valid global cap", () => {
@@ -387,7 +387,7 @@ describe("applyLiteCompression", () => {
     const result = applyCompression({ messages: [{ role: "tool", content: toolContent }] }, "lite");
     const messages = result.body.messages as Array<{ content: string }>;
 
-    assert.match(messages[0].content, /\.\.\.\[truncated\]$/);
+    assert.match(messages[0].content, /\.\.\.\[truncated \d+ of \d+ chars\]$/);
     assert.ok(messages[0].content.length < toolContent.length);
   });
 
@@ -414,7 +414,7 @@ describe("applyLiteCompression", () => {
 
     assert.equal(messages[0].content, toolContent.trimEnd());
     assert.ok(messages[0].content.length > 2000);
-    assert.doesNotMatch(messages[0].content, /\[truncated\]/);
+    assert.doesNotMatch(messages[0].content, /\[truncated \d+ of \d+ chars\]/);
     assert.ok(result.stats?.techniquesUsed.includes("whitespace"));
     assert.ok(!result.stats?.techniquesUsed.includes("tool-compress"));
   });

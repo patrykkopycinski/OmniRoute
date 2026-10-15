@@ -19,8 +19,11 @@ interface LiteCompressionOptions {
   preserveSystemPrompt?: boolean;
   compressToolResults?: boolean;
   maxToolLength?: number;
+  /** Tool names whose results are never truncated (interactive answers, pagers). */
+  exemptToolNames?: string[];
 }
 
+const DEFAULT_EXEMPT_TOOL_NAMES = ["clarify"];
 const DEFAULT_MAX_TOOL_LENGTH = 2000;
 const MIN_MAX_TOOL_LENGTH = 256;
 const MAX_MAX_TOOL_LENGTH = 1_000_000;
@@ -45,6 +48,25 @@ export function isUsableLiteMaxToolLength(value: unknown): value is number {
 export function resolveLiteMaxToolLength(maxToolLength?: number): number {
   if (isUsableLiteMaxToolLength(maxToolLength)) return Math.floor(maxToolLength);
   return envInt("OMNIROUTE_LITE_MAX_TOOL_LENGTH", DEFAULT_MAX_TOOL_LENGTH);
+}
+
+/** True when a value is a usable `exemptToolNames` list (array of non-empty strings, <= 64). */
+export function isUsableLiteExemptToolNames(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 64 &&
+    value.every((name) => typeof name === "string" && name.length > 0 && name.length <= 128)
+  );
+}
+
+/** Configured names (default `["clarify"]`) plus any from OMNIROUTE_LITE_EXEMPT_TOOLS (comma-separated). */
+export function resolveLiteExemptToolNames(names?: string[]): Set<string> {
+  const fromEnv = (process.env.OMNIROUTE_LITE_EXEMPT_TOOLS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const configured = isUsableLiteExemptToolNames(names) ? names : DEFAULT_EXEMPT_TOOL_NAMES;
+  return new Set([...configured, ...fromEnv]);
 }
 
 function normalizeMessageWhitespace(content: string): string {
@@ -154,6 +176,18 @@ export function compressToolResults(
 } {
   if (!body.messages) return { body, applied: false };
   const MAX_TOOL_LENGTH = resolveLiteMaxToolLength(options.maxToolLength);
+  const exempt = resolveLiteExemptToolNames(options.exemptToolNames);
+  // OpenAI tool messages may omit `name`; resolve it from the assistant tool_calls.
+  const toolNameById = new Map<string, string>();
+  for (const m of body.messages) {
+    const calls = m.tool_calls;
+    if (m.role !== "assistant" || !Array.isArray(calls)) continue;
+    for (const call of calls as Array<{ id?: unknown; function?: { name?: unknown } }>) {
+      if (typeof call?.id === "string" && typeof call.function?.name === "string") {
+        toolNameById.set(call.id, call.function.name);
+      }
+    }
+  }
   // Results of the latest tool calls (after the last assistant message) are
   // what the model asked for this turn. Cutting them makes it re-read the same
   // file forever, since every re-read is cut again.
@@ -164,11 +198,17 @@ export function compressToolResults(
     if (index >= currentTurnStart) return msg;
     if (msg.role !== "tool" || typeof msg.content !== "string") return msg;
     if (msg.content.length <= MAX_TOOL_LENGTH) return msg;
+    const toolName =
+      (typeof msg.name === "string" && msg.name) ||
+      (typeof msg.tool_call_id === "string" ? toolNameById.get(msg.tool_call_id) : undefined);
+    if (toolName && exempt.has(toolName)) return msg;
     applied = true;
     const cutIndex = backOffToWordBoundary(msg.content, MAX_TOOL_LENGTH);
     return {
       ...msg,
-      content: msg.content.slice(0, cutIndex) + "\n...[truncated]",
+      content:
+        msg.content.slice(0, cutIndex) +
+        `\n...[truncated ${msg.content.length - cutIndex} of ${msg.content.length} chars]`,
     };
   });
   return { body: { ...body, messages }, applied };

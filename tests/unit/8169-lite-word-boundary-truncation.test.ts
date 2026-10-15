@@ -25,7 +25,7 @@ test("#8169: lite compressToolResults must not cut a word in half", () => {
   const content = prefix + word + " rest of the message continues here.";
   const { body: out } = compressToolResults(toolBody(content));
   const resultContent = firstMessageContent(out as TestChatBody);
-  const cutPoint = resultContent.indexOf("\n...[truncated]");
+  const cutPoint = resultContent.search(/\n\.\.\.\[truncated \d+ of \d+ chars\]/);
   assert.notEqual(cutPoint, -1);
   const lastChar = resultContent[cutPoint - 1];
   const charAfterWouldBe = content[cutPoint];
@@ -43,7 +43,7 @@ test("#8169: compressToolResults still truncates content well over MAX_TOOL_LENG
   const resultContent = firstMessageContent(out as TestChatBody);
   assert.equal(applied, true);
   assert.ok(resultContent.length < content.length);
-  assert.ok(resultContent.endsWith("\n...[truncated]"));
+  assert.match(resultContent, /\n\.\.\.\[truncated \d+ of \d+ chars\]$/);
 });
 
 test("#8169: compressToolResults falls back to hard cut when no whitespace found in lookback window", () => {
@@ -51,7 +51,7 @@ test("#8169: compressToolResults falls back to hard cut when no whitespace found
   const { body: out, applied } = compressToolResults(toolBody(content));
   const resultContent = firstMessageContent(out as TestChatBody);
   assert.equal(applied, true);
-  assert.ok(resultContent.endsWith("\n...[truncated]"));
+  assert.match(resultContent, /\n\.\.\.\[truncated \d+ of \d+ chars\]$/);
 });
 
 test("#8169: compressToolResults leaves short tool content untouched", () => {

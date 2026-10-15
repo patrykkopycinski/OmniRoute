@@ -182,6 +182,8 @@ export interface OmniglyphConfig {
 export interface LiteConfig {
   /** Truncate tool-result strings over this many characters before provider dispatch. */
   maxToolLength?: number;
+  /** Tool names whose results are never truncated. Default `["clarify"]`; OMNIROUTE_LITE_EXEMPT_TOOLS adds more. */
+  exemptToolNames?: string[];
   /** When false, skip proactive tool-result truncation. */
   compressToolResults: boolean;
 }
