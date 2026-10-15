@@ -114,6 +114,17 @@ describe("lite exemptToolNames", () => {
     assert.equal(out.applied, true);
   });
 
+  it("an explicit empty list removes the clarify default; the env var still adds names", () => {
+    assert.deepEqual([...resolveLiteExemptToolNames([])], []);
+    process.env.OMNIROUTE_LITE_EXEMPT_TOOLS = "pager";
+    assert.deepEqual([...resolveLiteExemptToolNames([])], ["pager"]);
+    const body = priorTurn({ role: "tool", tool_call_id: "c1", content: BIG }, "clarify");
+    assert.equal(
+      compressToolResults(body as never, { maxToolLength: CAP, exemptToolNames: [] }).applied,
+      true
+    );
+  });
+
   it("validates the list shape", () => {
     assert.equal(isUsableLiteExemptToolNames(["a"]), true);
     assert.equal(isUsableLiteExemptToolNames([]), true);
@@ -174,7 +185,9 @@ describe("lite exemptToolNames", () => {
     assert.equal(input[2].output, BIG, "clarify output must be untouched");
     assert.notEqual(input[4].output, BIG, "read output must still be truncated");
     assert.match(String(input[4].output), /\[truncated \d+ of \d+ chars\]$/);
-    assert.ok(!("name" in input[2]) || input[2].name === undefined, "synthetic name must not leak");
+    for (const idx of [2, 4]) {
+      assert.ok(!("name" in input[idx]), `synthetic name must not leak into input[${idx}]`);
+    }
     assert.ok(!("messages" in out.body));
   });
 
