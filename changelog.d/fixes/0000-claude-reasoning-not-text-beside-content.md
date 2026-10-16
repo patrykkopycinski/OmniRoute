@@ -1,0 +1,1 @@
+- **fix(translator):** Claude responses with `thinking` opted out no longer relay upstream reasoning as extra text — the reasoning-as-text fallback is skipped once a text block, a `tool_use` or a pending XML tool call exists, and a non-streaming `content: ""` beside reasoning no longer shadows it with an "(empty response)" filler.
