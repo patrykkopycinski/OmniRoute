@@ -698,6 +698,7 @@ export function openaiToClaudeResponse(chunk, state) {
       !state.textBlockStarted &&
       !state._textBlockEmitted &&
       state.toolCalls.size === 0 &&
+      (state._pendingXmlToolCalls?.length ?? 0) === 0 &&
       state._reasoningAccum &&
       state.requestedThinking === false
     ) {

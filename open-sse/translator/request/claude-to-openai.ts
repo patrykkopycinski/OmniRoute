@@ -1,7 +1,7 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.ts";
-import { isOpenAICompatibleProvider } from "@/shared/constants/providers";
+import { isOpenAICompatibleProvider, isSelfHostedChatProvider } from "@/shared/constants/providers";
 
 type JsonRecord = Record<string, unknown>;
 const TOOL_CHOICE_ANY = ["a", "n", "y"].join("");
@@ -317,7 +317,7 @@ export function claudeToOpenAIRequest(model, body, stream, credentials: unknown 
 // before translation, so on the /v1/messages path they sit on a Claude body whose OpenAI
 // rebuild above only copies a fixed field set. Carry the OpenAI-compat template knobs across,
 // and map Anthropic `thinking:{type:"disabled"}` onto `enable_thinking=false` for
-// openai-compatible targets (llama.cpp / SGLang / vLLM read it as a flat body field;
+// template-aware targets (openai-compatible / self-hosted: llama.cpp / SGLang / vLLM read it as a flat body field;
 // `reasoning_effort` is ignored or 400s there). An off switch also wins over any effort the
 // client sent: leaving `reasoning_effort` set could re-enable provider-side thinking.
 function carryTemplateKwargsAndThinkingOptOut(
@@ -325,6 +325,14 @@ function carryTemplateKwargsAndThinkingOptOut(
   result: JsonRecord,
   credentials: unknown
 ): void {
+  // Only template-aware targets understand `chat_template_kwargs` / `extra_body`; real
+  // OpenAI, Groq, DeepSeek, OpenRouter, Anthropic, etc. 400 on unknown request args.
+  const provider =
+    credentials !== null && typeof credentials === "object" && !Array.isArray(credentials)
+      ? (credentials as JsonRecord)._provider
+      : undefined;
+  if (!isOpenAICompatibleProvider(provider) && !isSelfHostedChatProvider(provider)) return;
+
   const templateKwargs: JsonRecord = {};
   if (isPlainRecord(body.chat_template_kwargs)) Object.assign(templateKwargs, body.chat_template_kwargs);
 
@@ -338,12 +346,8 @@ function carryTemplateKwargsAndThinkingOptOut(
     }
   }
 
-  const provider =
-    credentials !== null && typeof credentials === "object" && !Array.isArray(credentials)
-      ? (credentials as JsonRecord)._provider
-      : undefined;
   const thinking = isPlainRecord(body.thinking) ? body.thinking : null;
-  if (thinking?.type === "disabled" && isOpenAICompatibleProvider(provider)) {
+  if (thinking?.type === "disabled") {
     templateKwargs.enable_thinking = false;
   }
 

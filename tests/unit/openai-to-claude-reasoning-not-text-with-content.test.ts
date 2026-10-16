@@ -83,3 +83,56 @@ test("reasoning-only response still synthesizes the text block (fix B preserved)
   const events = run(state, [{ reasoning_content: "Only reasoning here." }, {}]);
   assert.equal(textOf(events), "Only reasoning here.");
 });
+
+const INVOKE = "<invoke name=\"Read\"><parameter name=\"file_path\">/a.py</parameter></invoke>";
+
+test("reasoning + XML <invoke> tool call (no text): reasoning is NOT synthesized into a text block", () => {
+  const events = run(createState(), [{ reasoning_content: "THINK " }, { content: INVOKE }, {}]);
+  assert.equal(
+    events.some((e) => e.type === "content_block_start" && e.content_block?.type === "tool_use"),
+    true
+  );
+  assert.equal(textOf(events), "", `reasoning leaked into a text block: ${textOf(events)}`);
+});
+
+test("text chunk then XML <invoke> in a later chunk: text stays exactly the real text", () => {
+  const events = run(createState(), [
+    { reasoning_content: "THINK " },
+    { content: "Reading." },
+    { content: INVOKE },
+    {},
+  ]);
+  assert.equal(textOf(events), "Reading.");
+});
+
+test('reasoning + closed text, finish without tools: reasoning is NOT appended after the text', () => {
+  const events = run(createState(), [{ reasoning_content: "THINK " }, { content: "Reading." }, {}]);
+  assert.equal(textOf(events), "Reading.");
+});
+
+test("_textBlockEmitted alone blocks the synthesis once a text block closed (no tool/XML calls)", () => {
+  // Isolate the _textBlockEmitted guard+setter: a text block is closed by a reasoning chunk
+  // while thinking is still requested, then the client flag flips to opt-out before finish.
+  // No tool_use and no pending XML call exist, so only _textBlockEmitted separates this
+  // from a genuine reasoning-only response.
+  const state = createState();
+  state.requestedThinking = true;
+  const chunk = (delta: Record<string, any>) =>
+    (openaiToClaudeResponse(
+      { id: "chatcmpl-x", model: "m", choices: [{ index: 0, delta, finish_reason: null }] },
+      state
+    ) ?? []) as any[];
+  const first = [...chunk({ content: "Reading." }), ...chunk({ reasoning_content: "THINK " })];
+  state.requestedThinking = false;
+  const rest = (openaiToClaudeResponse(
+    {
+      id: "chatcmpl-x",
+      model: "m",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+    state
+  ) ?? []) as any[];
+  const text = textOf([...first, ...rest]);
+  assert.equal(text, "Reading.", `synthesised a duplicate text block: ${text}`);
+});
