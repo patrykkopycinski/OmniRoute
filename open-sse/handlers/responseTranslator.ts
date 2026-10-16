@@ -807,13 +807,24 @@ function convertOpenAINonStreamingToClaude(
   // Always include text if it exists (even empty string), or if there are no tool calls and no reasoning
   const hasToolCalls = Array.isArray(messageObj.tool_calls) && messageObj.tool_calls.length > 0;
 
+  // When the fallback below is what recovers the reasoning, the client opted out of thinking and
+  // that reasoning is only reachable through the text fallback.
+  const suppressReasoningFallback = suppressThinking && Boolean(reasoningText);
+  // Some upstreams send `content: ""` (not null) beside such reasoning. The empty string must be
+  // treated like null there, otherwise it shadows the fallback with an "(empty response)" block and
+  // the reasoning is lost.
+  const hasContentField =
+    messageObj.content !== undefined &&
+    messageObj.content !== null &&
+    !(messageObj.content === "" && suppressReasoningFallback);
+
   if (typeof messageObj.refusal === "string" && messageObj.refusal) {
     hasTextOrReasoning = true;
     if (typeof messageObj.content === "string" && messageObj.content) {
       content.push({ type: "text", text: messageObj.content });
     }
     content.push({ type: "text", text: messageObj.refusal });
-  } else if (messageObj.content !== undefined && messageObj.content !== null) {
+  } else if (hasContentField) {
     hasTextOrReasoning = true;
     const resolvedText = toString(messageObj.content);
     // #15764: no placeholder text block next to tool_use when the text is empty.
@@ -823,17 +834,18 @@ function convertOpenAINonStreamingToClaude(
         text: resolvedText === "" ? "(empty response)" : resolvedText,
       });
     }
-  } else if (suppressThinking && reasoningText) {
+  } else if (suppressReasoningFallback && !hasToolCalls) {
     // Reasoning-ONLY response with thinking opted out (requestedThinking===false):
     // no ordinary content, reasoning suppressed above. Relay the reasoning text as
     // an ordinary text block so the response is not empty (no 502) and no thinking
     // block leaks — mirrors the streaming translator's finish-time fallback.
+    // A response carrying tool_use is complete on its own: no text block beside it.
     hasTextOrReasoning = true;
     content.push({
       type: "text",
       text: reasoningText,
     });
-  } else if (!hasTextOrReasoning) {
+  } else if (!hasTextOrReasoning && !(suppressReasoningFallback && hasToolCalls)) {
     content.push({
       type: "text",
       text: "(empty response)",

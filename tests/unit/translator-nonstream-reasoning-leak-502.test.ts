@@ -131,3 +131,99 @@ test("BACKCOMPAT: non-stream reasoning-only with requestedThinking=true keeps th
 
   assert.ok(ts.includes("thinking"), "thinking block relayed when client opted in");
 });
+
+test("non-stream: content null + tool_calls + reasoning with requestedThinking=false adds NO text block beside tool_use", () => {
+  const translated = translateNonStreamingResponse(
+    {
+      id: "chatcmpl-tc",
+      object: "chat.completion",
+      model: "GLM-5.2",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            reasoning_content: "THINK about the tool",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "Read", arguments: '{"path":"a.py"}' },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+    "openai",
+    "claude",
+    null,
+    null,
+    false
+  );
+  assert.deepEqual(typesOf(translated), ["tool_use"]);
+});
+
+test('non-stream: content "" (empty string) + reasoning with requestedThinking=false relays reasoning as text, like content null', () => {
+  const translated = translateNonStreamingResponse(
+    {
+      id: "chatcmpl-empty-str",
+      object: "chat.completion",
+      model: "GLM-5.2",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "", reasoning_content: "THINK only" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+    "openai",
+    "claude",
+    null,
+    null,
+    false
+  ) as { content?: Array<{ type?: string; text?: string }> };
+
+  assert.deepEqual(typesOf(translated), ["text"]);
+  assert.equal(translated.content?.[0]?.text, "THINK only");
+});
+
+test('non-stream: content "" + tool_calls + reasoning with requestedThinking=false adds NO text block beside tool_use', () => {
+  const translated = translateNonStreamingResponse(
+    {
+      id: "chatcmpl-empty-str-tc",
+      object: "chat.completion",
+      model: "GLM-5.2",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "",
+            reasoning_content: "THINK about the tool",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "Read", arguments: '{"path":"a.py"}' },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+    "openai",
+    "claude",
+    null,
+    null,
+    false
+  );
+  assert.deepEqual(typesOf(translated), ["tool_use"]);
+});

@@ -287,6 +287,9 @@ function flushMarkdownBuffer(state, results) {
 function stopTextBlock(state, results) {
   flushMarkdownBuffer(state, results);
   if (!state.textBlockStarted || state.textBlockClosed) return;
+  // Remember that a real text block went out: textBlockStarted is reset below, so the
+  // finish-time reasoning-only synthesis cannot tell "no text yet" from "text already closed".
+  state._textBlockEmitted = true;
   state.textBlockClosed = true;
   results.push({
     type: "content_block_stop",
@@ -533,6 +536,7 @@ export function openaiToClaudeResponse(chunk, state) {
     state.model = chunk.model || "unknown";
     state.nextBlockIndex = 0;
     state._pendingXmlToolCalls = [];
+    state._textBlockEmitted = false;
     state._dsmlHoldback = undefined;
     state._xmlInvokeBuffer = "";
     state._markdownBuffer = "";
@@ -906,8 +910,17 @@ export function openaiToClaudeResponse(chunk, state) {
     // rejected, looping the session. Only when the client explicitly opted OUT
     // (requestedThinking === false): for `true` and for legacy `undefined` the
     // reasoning already went out as a thinking block above, and synthesizing a
-    // text block too would double-expose it.
-    if (!state.textBlockStarted && state._reasoningAccum && state.requestedThinking === false) {
+    // text block too would double-expose it. It also only applies to a response
+    // with no other content block: reasoning must not be relayed as extra text
+    // beside a text block, a tool_use or a pending XML <invoke> call.
+    if (
+      !state.textBlockStarted &&
+      !state._textBlockEmitted &&
+      state.toolCalls.size === 0 &&
+      (state._pendingXmlToolCalls?.length ?? 0) === 0 &&
+      state._reasoningAccum &&
+      state.requestedThinking === false
+    ) {
       state.textBlockIndex = state.nextBlockIndex++;
       state.textBlockStarted = true;
       state.textBlockClosed = false;
