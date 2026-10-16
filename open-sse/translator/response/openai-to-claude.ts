@@ -216,6 +216,9 @@ function flushMarkdownBuffer(state, results) {
 function stopTextBlock(state, results) {
   flushMarkdownBuffer(state, results);
   if (!state.textBlockStarted || state.textBlockClosed) return;
+  // Remember that a real text block went out: textBlockStarted is reset below, so the
+  // finish-time reasoning-only synthesis cannot tell "no text yet" from "text already closed".
+  state._textBlockEmitted = true;
   state.textBlockClosed = true;
   results.push({
     type: "content_block_stop",
@@ -691,7 +694,13 @@ export function openaiToClaudeResponse(chunk, state) {
     // (requestedThinking === false): for `true` and for legacy `undefined` the
     // reasoning already went out as a thinking block above, and synthesizing a
     // text block too would double-expose it.
-    if (!state.textBlockStarted && state._reasoningAccum && state.requestedThinking === false) {
+    if (
+      !state.textBlockStarted &&
+      !state._textBlockEmitted &&
+      state.toolCalls.size === 0 &&
+      state._reasoningAccum &&
+      state.requestedThinking === false
+    ) {
       state.textBlockIndex = state.nextBlockIndex++;
       state.textBlockStarted = true;
       state.textBlockClosed = false;

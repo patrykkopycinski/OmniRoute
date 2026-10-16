@@ -1,6 +1,7 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { adjustMaxTokens } from "../helpers/maxTokensHelper.ts";
+import { isOpenAICompatibleProvider } from "@/shared/constants/providers";
 
 type JsonRecord = Record<string, unknown>;
 const TOOL_CHOICE_ANY = ["a", "n", "y"].join("");
@@ -307,7 +308,56 @@ export function claudeToOpenAIRequest(model, body, stream, credentials: unknown 
     }
   }
 
+  carryTemplateKwargsAndThinkingOptOut(body, result, credentials);
+
   return result;
+}
+
+// Combo step params (`thinking:"off"`, `extraBody`) are applied to the CLIENT-shaped body
+// before translation, so on the /v1/messages path they sit on a Claude body whose OpenAI
+// rebuild above only copies a fixed field set. Carry the OpenAI-compat template knobs across,
+// and map Anthropic `thinking:{type:"disabled"}` onto `enable_thinking=false` for
+// openai-compatible targets (llama.cpp / SGLang / vLLM read it as a flat body field;
+// `reasoning_effort` is ignored or 400s there). An off switch also wins over any effort the
+// client sent: leaving `reasoning_effort` set could re-enable provider-side thinking.
+function carryTemplateKwargsAndThinkingOptOut(
+  body: JsonRecord,
+  result: JsonRecord,
+  credentials: unknown
+): void {
+  const templateKwargs: JsonRecord = {};
+  if (isPlainRecord(body.chat_template_kwargs)) Object.assign(templateKwargs, body.chat_template_kwargs);
+
+  const rawExtra = isPlainRecord(body.extra_body) ? body.extra_body : null;
+  if (rawExtra) {
+    result.extra_body = { ...rawExtra };
+    if (isPlainRecord(rawExtra.chat_template_kwargs)) {
+      for (const [k, v] of Object.entries(rawExtra.chat_template_kwargs)) {
+        if (!(k in templateKwargs)) templateKwargs[k] = v;
+      }
+    }
+  }
+
+  const provider =
+    credentials !== null && typeof credentials === "object" && !Array.isArray(credentials)
+      ? (credentials as JsonRecord)._provider
+      : undefined;
+  const thinking = isPlainRecord(body.thinking) ? body.thinking : null;
+  if (thinking?.type === "disabled" && isOpenAICompatibleProvider(provider)) {
+    templateKwargs.enable_thinking = false;
+  }
+
+  if (Object.keys(templateKwargs).length === 0) return;
+  result.chat_template_kwargs = templateKwargs;
+  if (rawExtra || templateKwargs.enable_thinking === false) {
+    const extra = isPlainRecord(result.extra_body) ? result.extra_body : {};
+    result.extra_body = { ...extra, chat_template_kwargs: { ...templateKwargs } };
+  }
+  if (templateKwargs.enable_thinking === false) delete result.reasoning_effort;
+}
+
+function isPlainRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // #4714: Re-group tool result messages so every role:"tool" message sits
