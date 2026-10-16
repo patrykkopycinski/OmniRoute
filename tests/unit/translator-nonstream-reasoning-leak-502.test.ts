@@ -131,3 +131,38 @@ test("BACKCOMPAT: non-stream reasoning-only with requestedThinking=true keeps th
 
   assert.ok(ts.includes("thinking"), "thinking block relayed when client opted in");
 });
+
+test("non-stream: content null + tool_calls + reasoning with requestedThinking=false adds NO text block beside tool_use", () => {
+  const translated = translateNonStreamingResponse(
+    {
+      id: "chatcmpl-tc",
+      object: "chat.completion",
+      model: "GLM-5.2",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            reasoning_content: "THINK about the tool",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "Read", arguments: "{\"path\":\"a.py\"}" },
+              },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+    "openai",
+    "claude",
+    null,
+    null,
+    false
+  );
+  assert.deepEqual(typesOf(translated), ["tool_use"]);
+});

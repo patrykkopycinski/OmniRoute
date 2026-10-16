@@ -780,7 +780,7 @@ function convertOpenAINonStreamingToClaude(
       type: "text",
       text: resolvedText === "" ? "(empty response)" : resolvedText,
     });
-  } else if (suppressThinking && reasoningText) {
+  } else if (suppressThinking && reasoningText && !hasToolCalls) {
     // Reasoning-ONLY response with thinking opted out (requestedThinking===false):
     // no ordinary content, reasoning suppressed above. Relay the reasoning text as
     // an ordinary text block so the response is not empty (no 502) and no thinking
@@ -790,7 +790,8 @@ function convertOpenAINonStreamingToClaude(
       type: "text",
       text: reasoningText,
     });
-  } else if (!hasTextOrReasoning) {
+  } else if (!hasTextOrReasoning && !(suppressThinking && reasoningText && hasToolCalls)) {
+    // (a suppressed-reasoning + tool_use response is complete: no filler text block beside tool_use)
     content.push({
       type: "text",
       text: "(empty response)",
