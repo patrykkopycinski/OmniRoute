@@ -522,7 +522,8 @@ export function translateRequest(
             hasTargetHint ||
             preserveCacheControl ||
             preserveResponsesReasoning ||
-            isGlmFamilyUpstream
+            isGlmFamilyUpstream ||
+            (sourceFormat === FORMATS.CLAUDE && provider != null)
               ? {
                   ...(credentials && typeof credentials === "object" ? credentials : {}),
                   ...(options?.copilotClient ? { _copilotClient: true } : {}),
@@ -530,6 +531,11 @@ export function translateRequest(
                   ...(preserveCacheControl ? { _preserveCacheControl: true } : {}),
                   ...(preserveResponsesReasoning ? { _preserveReasoningContent: true } : {}),
                   ...(isGlmFamilyUpstream ? { _ensureUserTurn: true } : {}),
+                  // Routed provider id: lets claude→openai map thinking:disabled only for
+                  // openai-compatible targets (template kwargs are meaningless elsewhere).
+                  ...(sourceFormat === FORMATS.CLAUDE && provider != null
+                    ? { _provider: provider }
+                    : {}),
                 }
               : credentials;
           result = toOpenAI(model, result, stream, step1Credentials);

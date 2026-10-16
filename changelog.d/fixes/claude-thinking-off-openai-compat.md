@@ -1,0 +1,1 @@
+- **fix(translator):** Claude→OpenAI translation now honors `thinking: { type: "disabled" }` for openai-compatible / self-hosted targets by sending `enable_thinking=false`, and no longer leaks reasoning as a `thinking` block or as extra text beside `tool_use` in streaming and non-streaming responses.

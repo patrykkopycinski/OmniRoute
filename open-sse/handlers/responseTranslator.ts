@@ -773,14 +773,22 @@ function convertOpenAINonStreamingToClaude(
   // Always include text if it exists (even empty string), or if there are no tool calls and no reasoning
   const hasToolCalls = Array.isArray(messageObj.tool_calls) && messageObj.tool_calls.length > 0;
 
-  if (messageObj.content !== undefined && messageObj.content !== null) {
+  // Some upstreams send `content: ""` (not null) beside reasoning. With thinking opted out the
+  // reasoning is only recoverable via the reasoning-as-text fallback below, so an empty string
+  // must be treated like null there instead of shadowing it with an "(empty response)" block.
+  const hasContentField =
+    messageObj.content !== undefined &&
+    messageObj.content !== null &&
+    !(messageObj.content === "" && suppressThinking && reasoningText);
+
+  if (hasContentField) {
     hasTextOrReasoning = true;
     const resolvedText = toString(messageObj.content);
     content.push({
       type: "text",
       text: resolvedText === "" ? "(empty response)" : resolvedText,
     });
-  } else if (suppressThinking && reasoningText) {
+  } else if (suppressThinking && reasoningText && !hasToolCalls) {
     // Reasoning-ONLY response with thinking opted out (requestedThinking===false):
     // no ordinary content, reasoning suppressed above. Relay the reasoning text as
     // an ordinary text block so the response is not empty (no 502) and no thinking
@@ -790,7 +798,8 @@ function convertOpenAINonStreamingToClaude(
       type: "text",
       text: reasoningText,
     });
-  } else if (!hasTextOrReasoning) {
+  } else if (!hasTextOrReasoning && !(suppressThinking && reasoningText && hasToolCalls)) {
+    // (a suppressed-reasoning + tool_use response is complete: no filler text block beside tool_use)
     content.push({
       type: "text",
       text: "(empty response)",
