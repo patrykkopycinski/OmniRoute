@@ -63,8 +63,37 @@ export function filterToOpenAIFormat(body, opts: FilterToOpenAIFormatOptions = {
     // decolua/9router#1011).
     if (msg.role === "developer") msg = { ...msg, role: "system" };
 
-    // Keep tool messages as-is (OpenAI format)
-    if (msg.role === "tool") return msg;
+    // Keep tool messages as-is (OpenAI format) — except for `cache_control`
+    // markers sitting on their content blocks. A `role:"tool"` message becomes a
+    // Claude `tool_result` block whose `content[]` is the message's content, so a
+    // marker left on a content block lands at `tool_result.content[i].cache_control`,
+    // which Anthropic hard-rejects: "cache_control may not be specified within
+    // `tool_result.content`. Instead, place it directly on `tool_result`". The
+    // prepareClaudeRequest hoist cannot save this path: it only runs for
+    // targetFormat === "claude", while an openai-compatible upstream that itself
+    // re-translates to Anthropic (gateway-in-front-of-Anthropic) never reaches it.
+    // Hoist the marker onto the tool MESSAGE instead, so the downstream
+    // openai→claude conversion emits it on the `tool_result` block itself.
+    if (msg.role === "tool") {
+      if (!Array.isArray(msg.content)) return msg;
+      let hoisted: unknown;
+      let found = false;
+      const content = msg.content.map((block) => {
+        if (!block || typeof block !== "object" || block.cache_control === undefined) return block;
+        found = true;
+        const { cache_control, ...rest } = block;
+        if (hoisted === undefined) hoisted = cache_control;
+        return rest;
+      });
+      if (!found) return msg;
+      const next = { ...msg, content };
+      // Only carry the marker up for providers that honor explicit OpenAI-format
+      // breakpoints; otherwise drop it, matching how non-tool blocks are stripped.
+      if (preserveCacheControl && next.cache_control === undefined) {
+        next.cache_control = hoisted;
+      }
+      return next;
+    }
 
     // Keep assistant messages with tool_calls, but strip reasoning_content —
     // reasoning blobs inflate context on every subsequent agentic turn (O(n^2)).
@@ -104,9 +133,7 @@ export function filterToOpenAIFormat(body, opts: FilterToOpenAIFormatOptions = {
           // honors OpenAI-format cache breakpoints and preservation was requested (#2069).
           const { signature, cache_control, ...rest } = block;
           const cleanBlock =
-            preserveCacheControl && cache_control !== undefined
-              ? { ...rest, cache_control }
-              : rest;
+            preserveCacheControl && cache_control !== undefined ? { ...rest, cache_control } : rest;
           if (
             cleanBlock.type === "text" &&
             typeof cleanBlock.text === "string" &&

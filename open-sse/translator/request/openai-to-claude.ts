@@ -583,6 +583,10 @@ function getContentBlocksFromMessage(
       type: "tool_result",
       tool_use_id: sanitizedToolUseId,
       content: toolContent,
+      // A `cache_control` marker hoisted off the tool message's content blocks
+      // (see filterToOpenAIFormat) belongs on the tool_result block itself —
+      // Anthropic rejects it inside `tool_result.content`.
+      ...(msg.cache_control !== undefined && { cache_control: msg.cache_control }),
     });
   } else if (msg.role === "user") {
     if (typeof msg.content === "string") {
