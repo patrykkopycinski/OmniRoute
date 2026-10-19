@@ -117,4 +117,81 @@ describe("OpenAI tool-message cache_control (tool_result.content 400)", () => {
       assert.equal(toolMsg.content, "plain tool output");
     }
   });
+
+  // --- Direct openai→claude leg (no filterToOpenAIFormat in front) ---------
+  // A client translating straight to the Anthropic protocol never passes
+  // through filterToOpenAIFormat, so openai-to-claude must hoist on its own.
+  // Verified against the captured 157-message live body: without this the
+  // direct leg still emitted 2 nested markers.
+
+  test("direct openai→claude hoists a nested marker off role:'tool' content", () => {
+    const claude = openaiToClaudeRequest("claude-opus-5", buildToolBody(), false, null);
+    const toolResult = claude.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result");
+    assert.ok(toolResult, "tool_result block exists");
+    assert.deepEqual(toolResult.cache_control, { type: "ephemeral" });
+    assert.equal(JSON.stringify(toolResult.content).includes("cache_control"), false);
+  });
+
+  test("direct openai→claude hoists a marker nested in a user-turn tool_result part", () => {
+    const body = {
+      model: "claude-opus-5",
+      messages: [
+        { role: "user", content: "list the files" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_TEST2",
+              type: "function",
+              function: { name: "list_files", arguments: "{}" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_TEST2",
+              content: [
+                { type: "text", text: "nested result", cache_control: { type: "ephemeral" } },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const claude = openaiToClaudeRequest("claude-opus-5", body, false, null);
+    const toolResult = claude.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result");
+    assert.ok(toolResult, "tool_result block exists");
+    assert.deepEqual(toolResult.cache_control, { type: "ephemeral" });
+    assert.equal(JSON.stringify(toolResult.content).includes("cache_control"), false);
+  });
+
+  test("an explicit block-level marker wins over a nested one", () => {
+    const body = buildToolBody();
+    body.messages[3].cache_control = { type: "ephemeral", ttl: "1h" };
+    const claude = openaiToClaudeRequest("claude-opus-5", body, false, null);
+    const toolResult = claude.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result");
+    assert.deepEqual(toolResult.cache_control, { type: "ephemeral", ttl: "1h" });
+    assert.equal(JSON.stringify(toolResult.content).includes("cache_control"), false);
+  });
+
+  test("tool_result without any marker gains no cache_control key", () => {
+    const body = buildToolBody();
+    delete body.messages[3].content[0].cache_control;
+    const claude = openaiToClaudeRequest("claude-opus-5", body, false, null);
+    const toolResult = claude.messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find((b) => b.type === "tool_result");
+    assert.ok(toolResult);
+    assert.equal("cache_control" in toolResult, false);
+  });
 });
