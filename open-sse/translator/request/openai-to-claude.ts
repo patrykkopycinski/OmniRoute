@@ -95,7 +95,7 @@ type ClaudeTool = {
  * first one so the caller can place it on the `tool_result` block itself. The
  * marker is only meaningful once per block, so the first wins.
  */
-export function hoistToolResultCacheControl(content: unknown): {
+export function hoistNestedToolResultCacheControl(content: unknown): {
   content: unknown;
   cacheControl: unknown;
 } {
@@ -612,7 +612,7 @@ function getContentBlocksFromMessage(
     // A nested `cache_control` is invalid inside `tool_result.content`; hoist it
     // onto the tool_result block. Also accept a marker already hoisted onto the
     // tool MESSAGE by filterToOpenAIFormat (openai-compat passthrough path).
-    const { content: hoistedContent, cacheControl } = hoistToolResultCacheControl(toolContent);
+    const { content: hoistedContent, cacheControl } = hoistNestedToolResultCacheControl(toolContent);
     const toolResultCacheControl =
       msg.cache_control !== undefined ? msg.cache_control : cacheControl;
     blocks.push({
@@ -639,7 +639,7 @@ function getContentBlocksFromMessage(
             Array.isArray(part.content) ? stripEmptyTextBlocks(part.content) : part.content
           );
           // Same tool_result.content restriction as the role:"tool" branch above.
-          const hoisted = hoistToolResultCacheControl(resultContent);
+          const hoisted = hoistNestedToolResultCacheControl(resultContent);
           const partCacheControl =
             part.cache_control !== undefined ? part.cache_control : hoisted.cacheControl;
           blocks.push({
