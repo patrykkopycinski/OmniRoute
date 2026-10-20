@@ -175,7 +175,7 @@ describe("OpenAI tool-message cache_control (tool_result.content 400)", () => {
 
   test("an explicit block-level marker wins over a nested one", () => {
     const body = buildToolBody();
-    body.messages[3].cache_control = { type: "ephemeral", ttl: "1h" };
+    (body.messages[3] as Record<string, unknown>).cache_control = { type: "ephemeral", ttl: "1h" };
     const claude = openaiToClaudeRequest("claude-opus-5", body, false, null);
     const toolResult = claude.messages
       .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
