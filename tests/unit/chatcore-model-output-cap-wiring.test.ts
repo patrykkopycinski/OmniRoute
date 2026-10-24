@@ -18,7 +18,7 @@ const { handleChatCore } = await import("../../open-sse/handlers/chatCore.ts");
 const PROVIDER = "capwire-testprov";
 const MODEL = "capwire-testmodel";
 const OUTPUT_CAP = 1000;
-const INPUT_CAP = 10;
+const INPUT_CAP = 20;
 const REQUESTED_MAX_TOKENS = 50_000;
 const originalFetch = globalThis.fetch;
 let dispatchedBody: Record<string, unknown> | null = null;
@@ -100,6 +100,9 @@ test("handleChatCore leaves a max_tokens below the cap untouched", async () => {
   assert.equal(dispatchedBody?.max_tokens, underCap);
 });
 
+// INPUT_CAP is 20 so the "hello" fixture (11 gate tokens at the dense 3.25
+// divisor) passes the cap for the clamp tests, while "x".repeat(200) (~62 gate
+// tokens) still overflows it.
 test("handleChatCore rejects input over the model input cap before upstream dispatch", async () => {
   dispatchedBody = null;
   fetchCalls = 0;

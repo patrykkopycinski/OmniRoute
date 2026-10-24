@@ -1,7 +1,9 @@
 /**
  * Feedback calibration for the context-guard token estimator (#14931).
  *
- * `estimateTokens` prices every part of a request at a flat chars/4. That is
+ * The gate path estimates requests at a dense divisor (chars /
+ * GATE_CHARS_PER_TOKEN, see chatCore/contextEstimation); all other
+ * `estimateTokens` call sites price at a flat chars/4. chars/4 is
  * accurate for prose (~4.2 chars/token in OpenAI-family tokenizers) but badly
  * wrong for tool-schema JSON, whose true density is tokenizer-dependent:
  * o200k packs it at ~4.7 chars/token while Qwen-family tokenizers reach

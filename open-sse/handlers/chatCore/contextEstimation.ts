@@ -11,6 +11,37 @@ function asJsonRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
 
+/**
+ * Chars-per-token divisor for the pre-dispatch input gate. Measured agent
+ * bodies (JSON-serialized messages + tools, code-heavy) tokenize at 3.27–3.83
+ * chars/token against a Qwen3 tokenizer, so the generic char/4 estimate
+ * undercounts by up to ~1.22x. The divisor must be <= 3.268 so the densest
+ * measured body (118,318 real tokens, jsonLen 386,749) is not undercounted, and
+ * >= 3.223 so that same body still fits a 120k cap on a cold calibration factor.
+ * 3.25 sits inside that window.
+ */
+export const GATE_CHARS_PER_TOKEN = 3.25;
+
+const COMPRESS_CHARS_PER_TOKEN = 4; // units compressContext/estimateTokens default to
+
+/** Gate divisor, overridable via OMNIROUTE_GATE_CHARS_PER_TOKEN (finite, in [1, 8]). Read per call. */
+export function getGateCharsPerToken(): number {
+  const raw = process.env.OMNIROUTE_GATE_CHARS_PER_TOKEN;
+  if (raw === undefined || raw.trim() === "") return GATE_CHARS_PER_TOKEN;
+  // Number(raw) for strict parsing: parseFloat would accept "3.25abc" as 3.25.
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 8 ? parsed : GATE_CHARS_PER_TOKEN;
+}
+
+/**
+ * Convert a budget expressed in gate (dense) tokens into the char/4 units
+ * compressContext measures against. Floors, so compaction never under-shoots
+ * the gate budget.
+ */
+export function gateBudgetToCompressionTokens(gateBudgetTokens: number): number {
+  return Math.floor((gateBudgetTokens * getGateCharsPerToken()) / COMPRESS_CHARS_PER_TOKEN);
+}
+
 export type FinalInputTokenBreakdown = {
   messages: number;
   tools: number;
@@ -33,11 +64,12 @@ export function estimateFinalInputTokenBreakdown(
       : requestBody?.input && typeof requestBody.input === "object"
         ? requestBody.input
         : []);
+  const divisor = getGateCharsPerToken();
   const breakdown = {
-    messages: estimateTokens(messages),
-    tools: Array.isArray(requestBody?.tools) ? estimateTokens(requestBody.tools) : 0,
-    system: estimateTokens(requestBody?.system),
-    instructions: estimateTokens(requestBody?.instructions),
+    messages: estimateTokens(messages, divisor),
+    tools: Array.isArray(requestBody?.tools) ? estimateTokens(requestBody.tools, divisor) : 0,
+    system: estimateTokens(requestBody?.system, divisor),
+    instructions: estimateTokens(requestBody?.instructions, divisor),
   };
   return { ...breakdown, total: Object.values(breakdown).reduce((sum, value) => sum + value, 0) };
 }
@@ -52,7 +84,7 @@ function toolsPresentIn(requestBody: JsonRecord | null | undefined): boolean {
 }
 
 /**
- * #14931: the raw chars/4 estimate scaled by the learned actual/estimated
+ * #14931: the raw gate estimate (chars / GATE_CHARS_PER_TOKEN) scaled by the learned actual/estimated
  * ratio for this provider/model × tools shape (services/estimatorCalibration).
  * The factor is 1.0 on cold start, so callers see the raw estimate until
  * trusted observations exist. Sits next to estimateFinalInputTokens so the

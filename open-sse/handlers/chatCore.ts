@@ -18,6 +18,7 @@ import { buildRequestTranslationErrorResult } from "./chatCore/requestTranslatio
 import {
   estimateCalibratedFinalInputTokens,
   estimateFinalInputTokenBreakdown,
+  gateBudgetToCompressionTokens,
 } from "./chatCore/contextEstimation.ts";
 import { buildClaudePassthroughBody } from "./chatCore/claudePassthroughBody.ts";
 export {
@@ -1830,6 +1831,16 @@ async function handleChatCoreInner({
         // separately as the threshold's reserve), unlike the full-breakdown
         // number the final guard rejects with — state the basis so the two
         // lines can be read side by side without a decoder ring.
+        //
+        // Deliberate basis split (gate-calibration commit): this proactive pass
+        // and the tools reserve below stay char/4, while the final guard and the
+        // last-resort compaction trigger use the dense GATE_CHARS_PER_TOKEN
+        // basis. Proactive therefore under-estimates relative to the gate: it
+        // under-compacts, so the (unit-converted) last-resort pass fires more
+        // often. The combo pre-filter (comboStructure/capabilityFilter) is also
+        // still char/4, so it can route a request the gate then rejects —
+        // failover absorbs that. Widening the dense basis beyond the gate path
+        // is a separate change.
         `Proactive compression triggered: ${estimatedTokens} message tokens > ${threshold} threshold (${effectiveCompactionCeiling} limit, tools reserve ${reservedTokens})`
       );
 
@@ -1917,7 +1928,11 @@ async function handleChatCoreInner({
     finalEstimatedInputTokens >= effectiveCompactionCeiling &&
     body
   ) {
-    const lastResortTarget = Math.max(1, effectiveCompactionCeiling - toolsReserve - 1);
+    // The ceiling and toolsReserve are gate (dense) tokens; compressContext measures char/4.
+    const lastResortTarget = Math.max(
+      1,
+      gateBudgetToCompressionTokens(effectiveCompactionCeiling - toolsReserve - 1)
+    );
     const lastResortAdapter = adaptBodyForCompression(body as Record<string, unknown>);
     const lastResortResult = compressContext(lastResortAdapter.body, {
       provider,

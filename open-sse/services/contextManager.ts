@@ -405,14 +405,18 @@ function measureVirtual(node: unknown, seen: Set<object>, flags?: MeasureFlags):
  * budget instead of measuring its base64 payload as raw text, then the
  * remainder of the structure is measured normally via the char/4 heuristic —
  * all in one pass, without building the substituted tree.
+ *
+ * `charsPerToken` defaults to the char/4 heuristic every existing caller relies
+ * on; only the pre-dispatch input gate passes a denser divisor.
  */
-export function estimateTokens(text: unknown): number {
+export function estimateTokens(text: unknown, charsPerToken: number = CHARS_PER_TOKEN): number {
   if (!text) return 0;
   if (typeof text === "string") {
-    return Math.ceil(text.length / CHARS_PER_TOKEN);
+    return Math.ceil(text.length / charsPerToken);
   }
   const { chars, mediaTokens } = measureVirtual(text, new Set());
-  return Math.ceil(chars / CHARS_PER_TOKEN) + mediaTokens;
+  // The divisor scales text only; the per-media budget is a fixed token count.
+  return Math.ceil(chars / charsPerToken) + mediaTokens;
 }
 
 /**
