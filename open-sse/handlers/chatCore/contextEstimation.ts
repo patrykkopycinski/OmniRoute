@@ -2,6 +2,7 @@ import { adaptBodyForCompression } from "../../services/compression/bodyAdapter.
 import { estimateTokens } from "../../services/contextManager.ts";
 import {
   applyEstimatorCalibration,
+  getEstimatorCalibrationFactor,
   recordEstimatorCalibrationFromUsage,
 } from "../../services/estimatorCalibration.ts";
 
@@ -107,6 +108,41 @@ export function estimateCalibratedFinalInputTokens(
     : estimateFinalInputTokens(record);
   if (estimated <= 0) return estimated;
   return applyEstimatorCalibration(provider, model, estimated, toolsPresentIn(record));
+}
+
+/**
+ * Last-resort compaction target for the pre-dispatch gate, in the char/4 units
+ * compressContext measures. Budgets the dense gate ceiling against ALL fixed
+ * parts of the request (tools + system + instructions from the same breakdown
+ * the gate uses), then scales the messages budget by the learned calibration
+ * factor — the gate compares the calibrated estimate, so an uncalibrated
+ * compaction target undershoots whenever the factor > 1.
+ *
+ * Returns null when the fixed parts alone already meet/exceed the ceiling:
+ * compaction cannot shrink them, so the gate rejection should stand.
+ *
+ * Clamps: a factor < 1 never grows the target past the uncalibrated dense
+ * budget; the result is never below 1.
+ */
+export function lastResortCompactionTarget({
+  ceiling,
+  breakdown,
+  provider,
+  model,
+  toolsPresent,
+}: {
+  ceiling: number;
+  breakdown: FinalInputTokenBreakdown;
+  provider: string | null | undefined;
+  model: string | null | undefined;
+  toolsPresent: boolean;
+}): number | null {
+  const rawDenseBudget =
+    ceiling - breakdown.tools - breakdown.system - breakdown.instructions - 1;
+  if (rawDenseBudget <= 0) return null;
+  const factor = getEstimatorCalibrationFactor(provider, model, toolsPresent);
+  const scaled = Math.min(rawDenseBudget, Math.floor(rawDenseBudget / factor));
+  return Math.max(1, gateBudgetToCompressionTokens(scaled));
 }
 
 /**

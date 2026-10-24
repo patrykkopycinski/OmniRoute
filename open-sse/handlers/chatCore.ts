@@ -19,6 +19,7 @@ import {
   estimateCalibratedFinalInputTokens,
   estimateFinalInputTokenBreakdown,
   gateBudgetToCompressionTokens,
+  lastResortCompactionTarget,
 } from "./chatCore/contextEstimation.ts";
 import { buildClaudePassthroughBody } from "./chatCore/claudePassthroughBody.ts";
 export {
@@ -1928,18 +1929,37 @@ async function handleChatCoreInner({
     finalEstimatedInputTokens >= effectiveCompactionCeiling &&
     body
   ) {
-    // The ceiling and toolsReserve are gate (dense) tokens; compressContext measures char/4.
-    const lastResortTarget = Math.max(
-      1,
-      gateBudgetToCompressionTokens(effectiveCompactionCeiling - toolsReserve - 1)
-    );
-    const lastResortAdapter = adaptBodyForCompression(body as Record<string, unknown>);
-    const lastResortResult = compressContext(lastResortAdapter.body, {
+    // The ceiling and breakdown are gate (dense) tokens; compressContext measures
+    // char/4. Fixed parts (tools + system + instructions) are budgeted out and the
+    // messages budget is scaled by the learned calibration factor — the gate
+    // compares the calibrated estimate, so an uncalibrated target undershoots
+    // whenever the factor > 1. Skips when the fixed parts alone meet/exceed the
+    // ceiling: compaction cannot shrink them, so the gate rejection stands.
+    const lastResortTarget = lastResortCompactionTarget({
+      ceiling: effectiveCompactionCeiling,
+      breakdown: finalInputBreakdown,
       provider,
       model: effectiveModel,
-      maxTokens: lastResortTarget,
-      reserveTokens: 0,
+      toolsPresent: toolsReserve > 0,
     });
+    if (lastResortTarget == null) {
+      log?.info?.(
+        "CONTEXT",
+        `Last-resort context compaction skipped: fixed tools/system/instructions ` +
+          `(${finalInputBreakdown.tools}/${finalInputBreakdown.system}/${finalInputBreakdown.instructions} dense tokens) ` +
+          `already meet or exceed the ceiling (${effectiveCompactionCeiling}); gate rejection stands`
+      );
+    }
+    const lastResortAdapter = adaptBodyForCompression(body as Record<string, unknown>);
+    const lastResortResult =
+      lastResortTarget == null
+        ? { compressed: false }
+        : compressContext(lastResortAdapter.body, {
+            provider,
+            model: effectiveModel,
+            maxTokens: lastResortTarget,
+            reserveTokens: 0,
+          });
     if (lastResortResult.compressed && lastResortResult.body) {
       body = lastResortAdapter.adapted
         ? lastResortAdapter.restore(lastResortResult.body as Record<string, unknown>, {

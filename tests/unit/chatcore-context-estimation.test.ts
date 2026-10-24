@@ -7,12 +7,14 @@ import {
   estimateCalibratedFinalInputTokens,
   GATE_CHARS_PER_TOKEN,
   gateBudgetToCompressionTokens,
+  lastResortCompactionTarget,
 } from "../../open-sse/handlers/chatCore/contextEstimation.ts";
 import { estimateTokens } from "../../open-sse/services/contextManager.ts";
 import {
   recordEstimatorCalibrationFromUsage,
   resetEstimatorCalibrationForTests,
 } from "../../open-sse/services/estimatorCalibration.ts";
+import { estimateTokens as estimateTokensRaw } from "../../open-sse/services/contextManager.ts";
 
 test("estimateFinalInputTokens counts nested request contents and auxiliary fields", () => {
   const contents = [{ role: "user", parts: [{ text: "nested Gemini request" }] }];
@@ -277,4 +279,146 @@ test("last-resort compaction target converts dense gate budget to char/4 units",
     // the converted target must use (nearly) the whole dense budget.
     assert.ok(estimateFinalInputTokens(compacted) >= ceiling * 0.97);
   });
+});
+
+// ─── last-resort compaction target (fixed parts + calibration factor) ───────
+
+function seedFactor(provider: string, model: string, factor: number, toolsPresent: boolean) {
+  for (let i = 0; i < 3; i++) {
+    recordEstimatorCalibrationFromUsage({
+      provider,
+      model,
+      estimatedTokens: 100_000,
+      usage: { prompt_tokens: Math.round(100_000 * factor) },
+      toolsPresent,
+    });
+  }
+}
+
+function breakdownFor(body: Record<string, unknown>) {
+  return estimateFinalInputTokenBreakdown(body);
+}
+
+test("last-resort target: big-system body that fits after compaction now budgets system out", () => {
+  resetEstimatorCalibrationForTests();
+  try {
+    const ceiling = 1_000;
+    // Messages alone fit the old tools-only budget (char/4 ≈ 490) but system is huge:
+    // fixed parts must shrink the budget so the compacted body passes the dense gate.
+    const body = {
+      messages: [{ role: "user", content: "m".repeat(1_960) }], // ~490 dense
+      system: "s".repeat(2_400), // ~740 dense
+    };
+    const breakdown = breakdownFor(body);
+    const target = lastResortCompactionTarget({
+      ceiling,
+      breakdown,
+      provider: "p",
+      model: "m",
+      toolsPresent: false,
+    });
+    assert.ok(target != null);
+    // Compress messages to exactly the char/4 target, keep system: must pass the gate.
+    const compacted = {
+      messages: [{ role: "user", content: "m".repeat(target * 4 - 40) }],
+      system: body.system,
+    };
+    assert.ok(estimateTokensRaw(compacted.messages) <= target);
+    const total = estimateFinalInputTokens(compacted);
+    assert.ok(
+      total <= ceiling,
+      `compact-to-target body must pass the gate (total=${total}, ceiling=${ceiling}, target=${target})`
+    );
+    // And the old tools-only budget would NOT have passed (proves the fix matters):
+    const oldTarget = gateBudgetToCompressionTokens(ceiling - 0 - 1);
+    const oldCompacted = {
+      messages: [{ role: "user", content: "m".repeat(oldTarget * 4 - 40) }],
+      system: body.system,
+    };
+    assert.ok(
+      estimateFinalInputTokens(oldCompacted) > ceiling,
+      "tools-only budget fixture must actually exceed the ceiling (test is meaningful)"
+    );
+  } finally {
+    resetEstimatorCalibrationForTests();
+  }
+});
+
+test("last-resort target: system alone over the ceiling returns null (skip compaction)", () => {
+  resetEstimatorCalibrationForTests();
+  try {
+    const ceiling = 1_000;
+    const body = { messages: [{ role: "user", content: "hi" }], system: "s".repeat(5_000) };
+    const breakdown = breakdownFor(body);
+    assert.ok(breakdown.system >= ceiling, "fixture: system alone exceeds the ceiling");
+    assert.equal(
+      lastResortCompactionTarget({
+        ceiling,
+        breakdown,
+        provider: "p",
+        model: "m",
+        toolsPresent: false,
+      }),
+      null
+    );
+  } finally {
+    resetEstimatorCalibrationForTests();
+  }
+});
+
+test("last-resort target: factor 1.25 shrinks the converted target by the factor (floor semantics)", () => {
+  resetEstimatorCalibrationForTests();
+  try {
+    seedFactor("p125", "m125", 1.25, false);
+    const ceiling = 10_000;
+    const body = { messages: [{ role: "user", content: "x".repeat(30_000) }] };
+    const breakdown = breakdownFor(body);
+    const raw = ceiling - breakdown.tools - breakdown.system - breakdown.instructions - 1;
+    assert.ok(raw > 0);
+    const target = lastResortCompactionTarget({
+      ceiling,
+      breakdown,
+      provider: "p125",
+      model: "m125",
+      toolsPresent: false,
+    });
+    assert.ok(target != null);
+    assert.equal(target, Math.max(1, Math.floor(Math.floor(raw / 1.25) * GATE_CHARS_PER_TOKEN / 4)));
+    // Sanity: the calibrated gate on a messages-at-target body fits.
+    const calibrated = Math.round(estimateFinalInputTokens({
+      messages: [{ role: "user", content: "m".repeat(target * 4 - 40) }],
+    }) * 1.25);
+    assert.ok(calibrated <= ceiling, `calibrated total must fit (got ${calibrated})`);
+  } finally {
+    resetEstimatorCalibrationForTests();
+  }
+});
+
+test("last-resort target: factor 0.8 never grows the target past the raw dense budget", () => {
+  resetEstimatorCalibrationForTests();
+  try {
+    seedFactor("p08", "m08", 0.8, false);
+    const ceiling = 10_000;
+    const body = { messages: [{ role: "user", content: "x".repeat(30_000) }] };
+    const breakdown = breakdownFor(body);
+    const raw = ceiling - breakdown.tools - breakdown.system - breakdown.instructions - 1;
+    const target = lastResortCompactionTarget({
+      ceiling,
+      breakdown,
+      provider: "p08",
+      model: "m08",
+      toolsPresent: false,
+    });
+    assert.ok(target != null);
+    const rawConverted = gateBudgetToCompressionTokens(raw);
+    assert.ok(target <= rawConverted, `target ${target} must not exceed raw converted ${rawConverted}`);
+    assert.ok(target >= 1);
+    // The clamp actually bound: unscaled-by-0.8 conversion would have been larger.
+    assert.ok(
+      Math.floor(raw * GATE_CHARS_PER_TOKEN / 4 / 0.8) > rawConverted,
+      "fixture: unclamped 0.8 scaling would exceed the raw budget"
+    );
+  } finally {
+    resetEstimatorCalibrationForTests();
+  }
 });
