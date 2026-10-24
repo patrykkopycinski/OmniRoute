@@ -22,6 +22,7 @@ import {
 } from "../../../src/lib/combos/steps.ts";
 import { getProviderByAlias, getProviderById } from "../../../src/shared/constants/providers.ts";
 import { estimateTokens } from "../contextManager.ts";
+import { getGateCharsPerToken } from "../../handlers/chatCore/contextEstimation.ts";
 import { containsMediaKind } from "../../utils/mediaParts.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";
 import { parseModel, stripContextWindowSuffix } from "../model.ts";
@@ -491,12 +492,18 @@ export function hasEstimableContent(value: unknown): boolean {
   return true;
 }
 
+// Same dense basis as the chatCore pre-dispatch input gate (GATE_CHARS_PER_TOKEN):
+// a target this filter accepts as context-compatible must be one the gate will
+// not reject for the same body. The generic char/4 estimate undercounts agent
+// JSON by up to ~1.22x, which let the filter route requests the gate then 400'd.
 function estimateRequestInputTokens(body: Record<string, unknown>): number {
   const estimatePayload: Record<string, unknown> = {};
   for (const key of ["messages", "input", "tools", "functions", "response_format"]) {
     if (hasEstimableContent(body[key])) estimatePayload[key] = body[key];
   }
-  return Object.keys(estimatePayload).length > 0 ? estimateTokens(estimatePayload) : 0;
+  return Object.keys(estimatePayload).length > 0
+    ? estimateTokens(estimatePayload, getGateCharsPerToken())
+    : 0;
 }
 
 function valueContainsImagePart(value: unknown): boolean {

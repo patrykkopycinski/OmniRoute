@@ -19,6 +19,7 @@ import {
   estimateCalibratedFinalInputTokens,
   estimateFinalInputTokenBreakdown,
   gateBudgetToCompressionTokens,
+  getGateCharsPerToken,
   lastResortCompactionTarget,
 } from "./chatCore/contextEstimation.ts";
 import { buildClaudePassthroughBody } from "./chatCore/claudePassthroughBody.ts";
@@ -1212,7 +1213,10 @@ async function handleChatCoreInner({
   // Strict model proofs cannot invoke auxiliary compression providers or prewarmers.
   // This trusted in-process fence is never accepted from a client header/body.
   if (!validationExecutorFence && body && Array.isArray(allMessages) && allMessages.length > 0) {
-    let estimatedTokens = estimateTokens(allMessages);
+    // Dense gate basis (GATE_CHARS_PER_TOKEN): the proactive pass and its tools
+    // reserve now measure like the final gate does, so proactive compaction no
+    // longer under-compacts relative to the gate.
+    let estimatedTokens = estimateTokens(allMessages, getGateCharsPerToken());
     const compressionSettingsResult = await resolveCompressionSettings(log);
     const compressionSettings: CompressionConfig | null = compressionSettingsResult.settings;
     // #8034 — operator-named model/endpoint exclusions bypass the whole pipeline, exactly
@@ -1464,7 +1468,7 @@ async function handleChatCoreInner({
               cavemanOutputModeApplied = true;
               cavemanOutputModeIntensity =
                 outputStyleResult.appliedStyles?.map((s) => `${s.id}:${s.level}`).join(",") ?? null;
-              estimatedTokens = estimateTokens(body?.messages ?? body?.input ?? []);
+              estimatedTokens = estimateTokens(body?.messages ?? body?.input ?? [], getGateCharsPerToken());
               log?.debug?.("COMPRESSION", "Output styles applied");
             } else if (
               outputStyleResult.skippedReason &&
@@ -1801,7 +1805,7 @@ async function handleChatCoreInner({
     ).getProactiveCompressionRatio();
     let reservedTokens = 0;
     if (Array.isArray(body.tools)) {
-      reservedTokens = estimateTokens(body.tools);
+      reservedTokens = estimateTokens(body.tools, getGateCharsPerToken());
     }
     const threshold = Math.max(
       1,
@@ -1833,15 +1837,13 @@ async function handleChatCoreInner({
         // number the final guard rejects with — state the basis so the two
         // lines can be read side by side without a decoder ring.
         //
-        // Deliberate basis split (gate-calibration commit): this proactive pass
-        // and the tools reserve below stay char/4, while the final guard and the
-        // last-resort compaction trigger use the dense GATE_CHARS_PER_TOKEN
-        // basis. Proactive therefore under-estimates relative to the gate: it
-        // under-compacts, so the (unit-converted) last-resort pass fires more
-        // often. The combo pre-filter (comboStructure/capabilityFilter) is also
-        // still char/4, so it can route a request the gate then rejects —
-        // failover absorbs that. Widening the dense basis beyond the gate path
-        // is a separate change.
+        // Basis note: since the basis-alignment follow-up, this proactive pass,
+        // its tools reserve, the combo pre-filter (comboStructure /
+        // capabilityFilter) and the final gate all measure on the dense
+        // GATE_CHARS_PER_TOKEN basis, so the numbers in this log, the
+        // last-resort log and the gate rejection agree by construction.
+        // compressContext still measures char/4 internally — the last-resort
+        // target is unit-converted (gateBudgetToCompressionTokens).
         `Proactive compression triggered: ${estimatedTokens} message tokens > ${threshold} threshold (${effectiveCompactionCeiling} limit, tools reserve ${reservedTokens})`
       );
 
@@ -1951,16 +1953,16 @@ async function handleChatCoreInner({
       );
     }
     const lastResortAdapter = adaptBodyForCompression(body as Record<string, unknown>);
-    const lastResortResult =
-      lastResortTarget == null
-        ? { compressed: false }
-        : compressContext(lastResortAdapter.body, {
-            provider,
-            model: effectiveModel,
-            maxTokens: lastResortTarget,
-            reserveTokens: 0,
-          });
-    if (lastResortResult.compressed && lastResortResult.body) {
+    let lastResortResult: ReturnType<typeof compressContext> | null = null;
+    if (lastResortTarget != null) {
+      lastResortResult = compressContext(lastResortAdapter.body, {
+        provider,
+        model: effectiveModel,
+        maxTokens: lastResortTarget,
+        reserveTokens: 0,
+      });
+    }
+    if (lastResortResult?.compressed && lastResortResult.body) {
       body = lastResortAdapter.adapted
         ? lastResortAdapter.restore(lastResortResult.body as Record<string, unknown>, {
             dropMissingMappedItems: true,

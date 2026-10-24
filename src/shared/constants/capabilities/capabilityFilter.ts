@@ -23,6 +23,7 @@ import {
   providerSupportsEmulatedToolCalling,
 } from "@omniroute/open-sse/services/combo/comboStructure";
 import { estimateTokens } from "@omniroute/open-sse/services/contextManager";
+import { getGateCharsPerToken } from "@omniroute/open-sse/handlers/chatCore/contextEstimation";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -56,12 +57,17 @@ function requestRequiresStructuredOutput(body: Record<string, unknown>): boolean
   return type === "json_object" || type === "json_schema";
 }
 
+// Same dense basis as the chatCore pre-dispatch input gate: keep the Layer A
+// filter in agreement with the gate so it stops accepting targets (context-wise)
+// the gate would reject for the same body.
 function estimateRequestInputTokens(body: Record<string, unknown>): number {
   const estimatePayload: Record<string, unknown> = {};
   for (const key of ["messages", "input", "tools", "functions", "response_format"]) {
     if (hasEstimableContent(body[key])) estimatePayload[key] = body[key];
   }
-  return Object.keys(estimatePayload).length > 0 ? estimateTokens(estimatePayload) : 0;
+  return Object.keys(estimatePayload).length > 0
+    ? estimateTokens(estimatePayload, getGateCharsPerToken())
+    : 0;
 }
 
 function getPositiveTokenCount(value: unknown): number {
