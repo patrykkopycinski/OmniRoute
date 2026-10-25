@@ -397,7 +397,9 @@ export function openaiToClaudeRequest(
             typeof credentials?._connectionId === "string" ? credentials._connectionId : undefined,
         },
         pendingToolUseIds,
-        result.thinking?.type
+        result.thinking && typeof result.thinking.type === "string"
+          ? result.thinking.type
+          : undefined
       );
       if (newRole === "assistant") {
         pendingToolUseIds = blocks.filter((b) => b.type === "tool_use").map((b) => String(b.id));
