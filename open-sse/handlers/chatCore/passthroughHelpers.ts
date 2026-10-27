@@ -338,28 +338,42 @@ export function stripLatestAssistantThinkingForModifiedRecovery<T>(body: T): T {
   while (index >= 0 && messages[index]?.role !== "assistant") index -= 1;
   if (index < 0) return body;
 
-  const message = messages[index];
-  if (!message || !Array.isArray(message.content) || !message.content.some(isThinkingBlock)) {
-    return body;
-  }
-  // Dropping every block would create an invalid empty assistant message.
-  // Keep the original failure when there is no safe content to retry.
-  if (hasNoSafeThinkingRecovery(message.content)) return body;
+  // #17324 recurrence (2026-10-27): Anthropic flags the message by cache-warmth, not
+  // recency — live 400s pointed at messages.1/messages.3 while the LATEST assistant
+  // message was clean, so the strip no-oped and the request failed with
+  // recoveryAttempted:false. Drop server-restored (store-provenance) thinking blocks
+  // from EVERY assistant turn; they are blocks the client never sent, so removing
+  // them is always a legal fallback shape on adaptive thinking. The latest assistant
+  // message additionally drops any non-restored thinking block (unchanged behavior).
+  let changed = false;
+  const recoveredMessages = messages.map((message) => {
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content)) {
+      return message;
+    }
+    const isLatestAssistant = message === messages[index];
+    if (!message.content.some(isThinkingBlock)) return message;
 
-  // The guards above exclude empty and already-normalized recovery bodies
-  // before downgrading stored blocks, which also forgets their cached entries.
-  const downgraded = downgradeRestoredClaudeThinking(message.content);
-  const base = (downgraded ?? message.content) as unknown[];
-  // #17324/#17344: a tool_use turn left with NO thinking block at all is a valid
-  // Anthropic request shape (verified live: assistant[tool_use] + thinking:adaptive →
-  // 200). Re-injecting the fabricated DEFAULT_THINKING_CLAUDE_SIGNATURE blob here
-  // re-creates the exact "latest assistant message cannot be modified" 400 this
-  // recovery exists to escape (the blob never matches what Anthropic actually signed
-  // for those tool_use ids while their cache is warm). Omit the placeholder.
-  const content = base.filter((block) => !isThinkingBlock(block));
+    if (isLatestAssistant) {
+      // Dropping every block would create an invalid empty assistant message.
+      // Keep the original failure when there is no safe content to retry.
+      if (hasNoSafeThinkingRecovery(message.content)) return message;
+      const downgraded = downgradeRestoredClaudeThinking(message.content);
+      const base = (downgraded ?? message.content) as unknown[];
+      const content = base.filter((block) => !isThinkingBlock(block));
+      if (content.length === base.length && base === message.content) return message;
+      changed = true;
+      return { ...message, content: content as typeof message.content };
+    }
 
-  const recoveredMessages = messages.slice();
-  recoveredMessages[index] = { ...message, content: content as typeof message.content };
+    const downgraded = downgradeRestoredClaudeThinking(message.content);
+    if (downgraded) {
+      changed = true;
+      return { ...message, content: downgraded as typeof message.content };
+    }
+    return message;
+  });
+
+  if (!changed) return body;
   return { ...record, messages: recoveredMessages } as T;
 }
 
