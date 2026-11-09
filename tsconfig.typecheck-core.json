@@ -22,6 +22,7 @@
     "src/lib/db/encryption.ts",
     "src/lib/db/prompts.ts",
     "src/lib/db/providers.ts",
+    "src/lib/db/quotaSnapshots.ts",
     "src/lib/db/settings.ts",
     "src/lib/db/stateReset.ts",
     "src/shared/validation/providerSchema.ts",
