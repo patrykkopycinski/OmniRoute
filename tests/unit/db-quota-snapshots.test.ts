@@ -170,6 +170,18 @@ test("resolveSnapshotRetentionDays defaults to 90 and honors the env override", 
   withRetentionEnv(" 30 ", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 30));
 });
 
+test("resolveSnapshotRetentionDays caps oversized windows at 36500 days", () => {
+  withRetentionEnv("999999999", () =>
+    assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 36500)
+  );
+  withRetentionEnv("36501", () =>
+    assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 36500)
+  );
+  withRetentionEnv("36500", () =>
+    assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 36500)
+  );
+});
+
 test("resolveSnapshotRetentionDays returns null (disabled) for 0", () => {
   withRetentionEnv("0", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), null));
 });
@@ -203,5 +215,28 @@ test("cleanupOldSnapshots default (90d) deletes only rows older than the window"
 test("cleanupOldSnapshots deletes nothing when QUOTA_SNAPSHOT_RETENTION_DAYS=0", () => {
   insertSnapshotAt("2000-01-01T00:00:00.000Z", "ancient");
   withRetentionEnv("0", () => assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(), 0));
+  assert.equal(countSnapshots(), 1);
+});
+
+test("cleanupOldSnapshots with an oversized env window does not throw and keeps recent rows", () => {
+  const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+  const decadeOld = new Date(Date.now() - 3650 * 24 * 60 * 60 * 1000).toISOString();
+  insertSnapshotAt(recent, "recent");
+  insertSnapshotAt(decadeOld, "decade-old");
+  withRetentionEnv("999999999", () => assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(), 0));
+  assert.equal(countSnapshots(), 2);
+});
+
+test("cleanupOldSnapshots caps an oversized explicit argument instead of throwing", () => {
+  insertSnapshotAt(new Date(Date.now() - 3650 * 24 * 60 * 60 * 1000).toISOString(), "decade-old");
+  assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(999999999), 0);
+  assert.equal(countSnapshots(), 1);
+});
+
+test("cleanupOldSnapshots treats an explicit retentionDays <= 0 as a no-op", () => {
+  insertSnapshotAt("2000-01-01T00:00:00.000Z", "ancient");
+  assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(0), 0);
+  assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(-5), 0);
+  assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(Number.NaN), 0);
   assert.equal(countSnapshots(), 1);
 });

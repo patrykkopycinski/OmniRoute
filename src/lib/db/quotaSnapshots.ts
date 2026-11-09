@@ -255,17 +255,21 @@ export function getAggregatedSnapshots(opts: {
 
 export const DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS = 90;
 
+/** 100 years. Larger windows push the cutoff before the Date epoch and `toISOString()` throws. */
+export const MAX_QUOTA_SNAPSHOT_RETENTION_DAYS = 36500;
+
 /**
  * Days of `quota_snapshots` history to keep. Reads `QUOTA_SNAPSHOT_RETENTION_DAYS`:
- * a positive integer sets the window, `0` disables cleanup (keep history forever), and
- * unset / non-numeric / negative values fall back to 90. Returns `null` when disabled.
+ * a positive integer sets the window (capped at 36500), `0` disables cleanup (keep history
+ * forever), and unset / non-numeric / negative values fall back to 90. Returns `null` when disabled.
  */
 export function resolveSnapshotRetentionDays(): number | null {
   const raw = (process.env.QUOTA_SNAPSHOT_RETENTION_DAYS ?? "").trim();
   if (!/^\d+$/.test(raw)) return DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS;
   const days = Number.parseInt(raw, 10);
   if (days === 0) return null;
-  return Number.isSafeInteger(days) ? days : DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS;
+  if (!Number.isSafeInteger(days)) return DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS;
+  return Math.min(days, MAX_QUOTA_SNAPSHOT_RETENTION_DAYS);
 }
 
 /** Clears the 6h cleanup throttle so tests can run several cleanups in one process. */
@@ -274,8 +278,10 @@ export function resetSnapshotCleanupThrottle(): void {
 }
 
 export function cleanupOldSnapshots(retentionDays?: number): number {
-  const effectiveDays = retentionDays ?? resolveSnapshotRetentionDays();
-  if (effectiveDays === null) return 0;
+  const requestedDays = retentionDays ?? resolveSnapshotRetentionDays();
+  // null (env disabled) and explicit <= 0 / non-finite mean "keep everything".
+  if (requestedDays === null || !Number.isFinite(requestedDays) || requestedDays <= 0) return 0;
+  const effectiveDays = Math.min(requestedDays, MAX_QUOTA_SNAPSHOT_RETENTION_DAYS);
 
   const now = Date.now();
   const cleanupThresholdMs = 6 * 60 * 60 * 1000;
