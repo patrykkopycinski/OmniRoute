@@ -17,6 +17,7 @@ async function resetStorage() {
 }
 
 test.beforeEach(async () => {
+  quotaSnapshotsDb.resetSnapshotCleanupThrottle();
   await resetStorage();
 });
 
@@ -130,4 +131,77 @@ test("quotaSnapshots cleanup removes old rows and throttles repeated execution",
 
   assert.equal(deleted, 1);
   assert.equal(throttled, 0);
+});
+
+function withRetentionEnv(value: string | undefined, fn: () => void) {
+  const prev = process.env.QUOTA_SNAPSHOT_RETENTION_DAYS;
+  if (value === undefined) delete process.env.QUOTA_SNAPSHOT_RETENTION_DAYS;
+  else process.env.QUOTA_SNAPSHOT_RETENTION_DAYS = value;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.QUOTA_SNAPSHOT_RETENTION_DAYS;
+    else process.env.QUOTA_SNAPSHOT_RETENTION_DAYS = prev;
+  }
+}
+
+function insertSnapshotAt(createdAt: string, connectionId: string) {
+  const db = coreDb.getDbInstance();
+  db.prepare(
+    `INSERT INTO quota_snapshots
+     (provider, connection_id, window_key, remaining_percentage, is_exhausted, next_reset_at, window_duration_ms, raw_data, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run("openai", connectionId, "hourly", 20, 0, null, 3600000, "{}", createdAt);
+}
+
+function countSnapshots(): number {
+  const row = coreDb.getDbInstance().prepare("SELECT COUNT(*) AS n FROM quota_snapshots").get() as {
+    n: number;
+  };
+  return row.n;
+}
+
+test("resolveSnapshotRetentionDays defaults to 90 and honors the env override", () => {
+  withRetentionEnv(undefined, () =>
+    assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 90)
+  );
+  withRetentionEnv("", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 90));
+  withRetentionEnv("365", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 365));
+  withRetentionEnv(" 30 ", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 30));
+});
+
+test("resolveSnapshotRetentionDays returns null (disabled) for 0", () => {
+  withRetentionEnv("0", () => assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), null));
+});
+
+test("resolveSnapshotRetentionDays falls back to 90 for invalid values", () => {
+  for (const bad of ["abc", "-5", "1.5", "30days", "NaN", "Infinity", "99999999999999999999"]) {
+    withRetentionEnv(bad, () =>
+      assert.equal(quotaSnapshotsDb.resolveSnapshotRetentionDays(), 90, bad)
+    );
+  }
+});
+
+test("cleanupOldSnapshots with no argument uses the env retention window", () => {
+  const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+  const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+  insertSnapshotAt(old, "old");
+  insertSnapshotAt(recent, "recent");
+  withRetentionEnv("365", () => assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(), 0));
+  assert.equal(countSnapshots(), 2);
+});
+
+test("cleanupOldSnapshots default (90d) deletes only rows older than the window", () => {
+  const old = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+  const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+  insertSnapshotAt(old, "old");
+  insertSnapshotAt(recent, "recent");
+  withRetentionEnv(undefined, () => assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(), 1));
+  assert.equal(countSnapshots(), 1);
+});
+
+test("cleanupOldSnapshots deletes nothing when QUOTA_SNAPSHOT_RETENTION_DAYS=0", () => {
+  insertSnapshotAt("2000-01-01T00:00:00.000Z", "ancient");
+  withRetentionEnv("0", () => assert.equal(quotaSnapshotsDb.cleanupOldSnapshots(), 0));
+  assert.equal(countSnapshots(), 1);
 });

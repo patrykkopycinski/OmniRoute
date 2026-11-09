@@ -253,7 +253,30 @@ export function getAggregatedSnapshots(opts: {
   }
 }
 
-export function cleanupOldSnapshots(retentionDays = 90): number {
+export const DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS = 90;
+
+/**
+ * Days of `quota_snapshots` history to keep. Reads `QUOTA_SNAPSHOT_RETENTION_DAYS`:
+ * a positive integer sets the window, `0` disables cleanup (keep history forever), and
+ * unset / non-numeric / negative values fall back to 90. Returns `null` when disabled.
+ */
+export function resolveSnapshotRetentionDays(): number | null {
+  const raw = (process.env.QUOTA_SNAPSHOT_RETENTION_DAYS ?? "").trim();
+  if (!/^\d+$/.test(raw)) return DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS;
+  const days = Number.parseInt(raw, 10);
+  if (days === 0) return null;
+  return Number.isSafeInteger(days) ? days : DEFAULT_QUOTA_SNAPSHOT_RETENTION_DAYS;
+}
+
+/** Clears the 6h cleanup throttle so tests can run several cleanups in one process. */
+export function resetSnapshotCleanupThrottle(): void {
+  lastCleanupAt = 0;
+}
+
+export function cleanupOldSnapshots(retentionDays?: number): number {
+  const effectiveDays = retentionDays ?? resolveSnapshotRetentionDays();
+  if (effectiveDays === null) return 0;
+
   const now = Date.now();
   const cleanupThresholdMs = 6 * 60 * 60 * 1000;
 
@@ -262,7 +285,7 @@ export function cleanupOldSnapshots(retentionDays = 90): number {
   }
 
   const db = getDbInstance() as unknown as DbLike;
-  const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const cutoffDate = new Date(Date.now() - effectiveDays * 24 * 60 * 60 * 1000).toISOString();
 
   try {
     const result = db.prepare("DELETE FROM quota_snapshots WHERE created_at < ?").run(cutoffDate);
