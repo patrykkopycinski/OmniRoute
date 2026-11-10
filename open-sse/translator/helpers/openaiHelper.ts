@@ -137,7 +137,7 @@ export function filterToOpenAIFormat(body, opts: FilterToOpenAIFormatOptions = {
           // Strip `signature` always; strip `cache_control` unless the provider
           // honors OpenAI-format cache breakpoints and preservation was requested (#2069).
           const { signature, cache_control, prompt_cache_breakpoint, ...rest } = block;
-          let cleanBlock: Record<string, unknown> =
+          let cleanBlock =
             preserveCacheControl && cache_control !== undefined ? { ...rest, cache_control } : rest;
           if (preservePromptCacheBreakpoint && prompt_cache_breakpoint !== undefined) {
             cleanBlock = { ...cleanBlock, prompt_cache_breakpoint };
