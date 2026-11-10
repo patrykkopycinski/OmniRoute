@@ -367,25 +367,34 @@ export function enforceCacheControlBlockLimit(
   return toRemove;
 }
 
-function messageHasCacheControl(msg: ClaudeMessage): boolean {
-  return (
-    Array.isArray(msg?.content) &&
-    msg.content.some((block) => block && typeof block === "object" && block.cache_control)
-  );
+/**
+ * Index of the last USER message carrying a breakpoint on a text part, or -1.
+ * Those are the explicit client breakpoints (client `cache_control` or the mapped
+ * OpenAI `prompt_cache_breakpoint`); heuristic markers placed before that point
+ * are redundant prefix-wise and would only break TTL ordering.
+ */
+export function lastUserTextBreakpointIndex(
+  messages: ReadonlyArray<ClaudeMessage> | undefined
+): number {
+  if (!Array.isArray(messages)) return -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role !== "user" || !Array.isArray(msg.content)) continue;
+    if (msg.content.some((b) => b && b.type === "text" && b.cache_control)) return i;
+  }
+  return -1;
 }
 
 /**
  * Anthropic requires 1h-TTL breakpoints to precede 5m ones in request order
  * (tools, system, messages). Message breakpoints can land after a 5m heuristic
  * marker (e.g. the second-to-last user turn), so downgrade any 1h marker that
- * follows an explicit 5m one. A missing ttl counts as 5m except on the native
- * `claude` route, where the executor later defaults it to 1h.
+ * follows a 5m one. A missing ttl is treated as 5m (Anthropic's default): the
+ * executor-side 1h defaulting only runs for Claude Code clients / OAuth, so it
+ * cannot be assumed on every route. Not applied to the Claude Code relay path,
+ * which forwards client markers verbatim.
  */
-export function normalizeClaudeCacheControlTtlOrder(
-  body: ClaudeRequestBody,
-  provider: string | null
-): number {
-  const missingTtlIsFiveMinutes = provider !== "claude";
+export function normalizeClaudeCacheControlTtlOrder(body: ClaudeRequestBody): number {
   let seenFiveMinutes = false;
   let downgraded = 0;
   const visit = (block: unknown) => {
@@ -397,7 +406,7 @@ export function normalizeClaudeCacheControlTtlOrder(
         cc.ttl = "5m";
         downgraded++;
       }
-    } else if (cc.ttl === "5m" || (cc.ttl === undefined && missingTtlIsFiveMinutes)) {
+    } else {
       seenFiveMinutes = true;
     }
   };
@@ -651,6 +660,9 @@ export function prepareClaudeRequest(
     // - cache the second-to-last user turn for conversation reuse
     // - cache the last assistant turn so the next user turn can reuse it
     // Skip in passthrough mode to preserve client's cache_control markers
+    const explicitUserBreakpointIdx = opts.keepUserTextBreakpoints
+      ? lastUserTextBreakpointIndex(filtered)
+      : -1;
     if (!preserveCacheControl && supportsPromptCaching) {
       const userMessageIndexes = filtered.reduce<number[]>((indexes, msg, index) => {
         if (msg?.role === "user") indexes.push(index);
@@ -658,7 +670,7 @@ export function prepareClaudeRequest(
       }, []);
       const secondToLastUserIndex =
         userMessageIndexes.length >= 2 ? userMessageIndexes[userMessageIndexes.length - 2] : -1;
-      if (secondToLastUserIndex >= 0 && !messageHasCacheControl(filtered[secondToLastUserIndex])) {
+      if (secondToLastUserIndex > explicitUserBreakpointIdx) {
         markMessageCacheControl(filtered[secondToLastUserIndex]);
       }
     }
@@ -689,6 +701,7 @@ export function prepareClaudeRequest(
           !preserveCacheControl &&
           supportsPromptCaching &&
           !lastAssistantProcessed &&
+          i > explicitUserBreakpointIdx &&
           markMessageCacheControl(msg)
         ) {
           lastAssistantProcessed = true;
@@ -896,9 +909,16 @@ export function prepareClaudeRequest(
   // the upstream API, not caching policy, so preserveCacheControl does not
   // exempt them (they were the 400 sources on claude 5.x since 2026-09-29).
   hoistToolResultCacheControl(body);
-  if (supportsPromptCaching) {
-    normalizeClaudeCacheControlTtlOrder(body, provider);
+  // User-text breakpoints can reach non-caching claude-format providers in preserve
+  // mode, so they get the cap and TTL ordering there too; requests without them keep
+  // the previous behaviour (cap only for caching providers, no TTL pass).
+  const hasUserBreakpoints =
+    opts.keepUserTextBreakpoints === true && lastUserTextBreakpointIndex(body.messages) >= 0;
+  if (supportsPromptCaching || hasUserBreakpoints) {
     enforceCacheControlBlockLimit(body);
+  }
+  if (hasUserBreakpoints) {
+    normalizeClaudeCacheControlTtlOrder(body);
   }
 
   return body;

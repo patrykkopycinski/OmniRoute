@@ -234,3 +234,137 @@ describe("TTL ordering with user-message breakpoints", () => {
     assert.ok(ttls.length <= 4);
   });
 });
+
+// ---- review follow-ups -------------------------------------------------------
+
+type Claude = { system?: Block[]; tools?: Block[]; messages: Msg[] };
+
+function breakpointSequence(result: Claude): Array<{ where: string; ttl: unknown }> {
+  const seq: Array<{ where: string; ttl: unknown }> = [];
+  for (const t of result.tools ?? [])
+    if (t.cache_control) seq.push({ where: "tool", ttl: (t.cache_control as Block).ttl });
+  for (const b of result.system ?? [])
+    if (b.cache_control) seq.push({ where: "system", ttl: (b.cache_control as Block).ttl });
+  for (const m of result.messages) {
+    if (!Array.isArray(m.content)) continue;
+    for (const b of m.content)
+      if (b.cache_control) seq.push({ where: m.role, ttl: (b.cache_control as Block).ttl });
+  }
+  return seq;
+}
+
+// Anthropic: 1h breakpoints must precede 5m ones; a missing ttl is the 5m default.
+function assertValidBreakpoints(result: Claude): void {
+  const seq = breakpointSequence(result);
+  assert.ok(seq.length <= 4, `>4 breakpoints: ${JSON.stringify(seq)}`);
+  let seenFive = false;
+  for (const { ttl } of seq) {
+    if (ttl === "1h") assert.ok(!seenFive, `1h after 5m: ${JSON.stringify(seq)}`);
+    else seenFive = true;
+  }
+}
+
+const tools = [
+  {
+    type: "function",
+    function: { name: "lookup", description: "d", parameters: { type: "object" } },
+  },
+];
+
+const markedPart = (text: string): Block => ({
+  type: "text",
+  text,
+  prompt_cache_breakpoint: { mode: "explicit" },
+});
+
+function responsesTurns(markedTurns: number): Record<string, unknown> {
+  const input: Block[] = [];
+  for (let i = 0; i < markedTurns; i++) {
+    input.push({
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: `ctx ${i}`, prompt_cache_breakpoint: { mode: "explicit" } },
+        { type: "input_text", text: `q${i}` },
+      ],
+    });
+    if (i < markedTurns - 1) {
+      input.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: `a${i}` }],
+      });
+    }
+  }
+  return { model: MODEL, instructions: "You are a reviewer.", input, tools };
+}
+
+describe("preserve mode on a claude-format provider outside the caching set (H2)", () => {
+  for (const provider of ["anthropic", "minimax", "kimi-coding", "glm"]) {
+    test(`${provider}: marked two-turn keeps valid TTL order`, () => {
+      const chat = convertResponsesApiFormat(responsesTurns(2), null, provider, MODEL);
+      assertValidBreakpoints(toClaude(chat, provider, true));
+    });
+    test(`${provider}: three marked turns + tools stays <= 4 blocks`, () => {
+      const chat = convertResponsesApiFormat(responsesTurns(3), null, provider, MODEL);
+      assertValidBreakpoints(toClaude(chat, provider, true));
+    });
+  }
+
+  test("requests without user breakpoints are unchanged for a non-caching provider", () => {
+    const body = {
+      model: MODEL,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+      ],
+    };
+    const result = toClaude(JSON.parse(JSON.stringify(body)), "anthropic", true);
+    // Base behaviour: system + last assistant markers only, nothing re-derived.
+    assert.deepEqual(
+      breakpointSequence(result).map((b) => b.where),
+      ["system", "assistant"]
+    );
+  });
+});
+
+describe("multi-turn anthropic-compatible-*: user breakpoint keeps the route TTL (M4)", () => {
+  const provider = "anthropic-compatible-test";
+  for (const preserve of [false, true]) {
+    test(`1h on the marked user turn, heuristic assistant marker dropped (preserve=${preserve})`, () => {
+      const chat = convertResponsesApiFormat(responsesTurns(2), null, provider, MODEL);
+      const result = toClaude(chat, provider, preserve);
+      assertValidBreakpoints(result);
+      const lastUser = result.messages[result.messages.length - 1].content as Block[];
+      assert.deepEqual(lastUser[0].cache_control, { type: "ephemeral", ttl: "1h" });
+    });
+  }
+});
+
+describe("zed-hosted anthropic path (M3)", () => {
+  test("2+ marked user parts: <= 4 blocks, valid TTL order", async () => {
+    const { __test__ } = await import("../../open-sse/executors/zed-hosted.ts");
+    const request = __test__.buildProviderRequest(
+      "anthropic" as never,
+      MODEL,
+      {
+        model: MODEL,
+        tools,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: [markedPart("c1"), markedPart("c2")] },
+          { role: "assistant", content: "a1" },
+          { role: "user", content: [markedPart("c3"), markedPart("c4")] },
+          { role: "assistant", content: "a2" },
+          { role: "user", content: [markedPart("c5")] },
+        ],
+      },
+      true,
+      {} as never
+    ) as Claude;
+    assertValidBreakpoints(request);
+    assert.ok(breakpointSequence(request).some((b) => b.where === "user"));
+  });
+});

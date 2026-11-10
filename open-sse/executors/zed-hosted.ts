@@ -33,6 +33,10 @@ import { PROVIDERS } from "../config/constants.ts";
 import { FORMATS } from "../translator/formats.ts";
 import { initState } from "../translator/index.ts";
 import { openaiToClaudeRequest } from "../translator/request/openai-to-claude.ts";
+import {
+  enforceCacheControlBlockLimit,
+  normalizeClaudeCacheControlTtlOrder,
+} from "../translator/helpers/claudeHelper.ts";
 import { openaiToGeminiRequest } from "../translator/request/openai-to-gemini.ts";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses/toResponses.ts";
 import { claudeToOpenAIResponse } from "../translator/response/claude-to-openai.ts";
@@ -133,7 +137,12 @@ function buildProviderRequest(
   credentials: ProviderCredentials
 ): unknown {
   if (provider === ZED_PROVIDER.anthropic) {
-    return openaiToClaudeRequest(model, body, true);
+    // No prepareClaudeRequest on this path, so apply the Anthropic breakpoint rules
+    // (max 4, 1h before 5m) that user-text breakpoints can otherwise violate.
+    const claudeRequest = openaiToClaudeRequest(model, body, true);
+    enforceCacheControlBlockLimit(claudeRequest);
+    normalizeClaudeCacheControlTtlOrder(claudeRequest);
+    return claudeRequest;
   }
   if (provider === ZED_PROVIDER.google) {
     return adaptGeminiRequestForZed(
@@ -529,7 +538,8 @@ export class ZedHostedExecutor extends BaseExecutor {
           Accept: "application/x-ndjson, text/event-stream, */*",
           "User-Agent": `OmniRoute/zed-hosted`,
           "x-zed-version":
-            (this.config as Record<string, unknown>)?.appVersion?.toString() || getZedClientVersion(),
+            (this.config as Record<string, unknown>)?.appVersion?.toString() ||
+            getZedClientVersion(),
           [ZED_HEADERS.clientSupportsStatus]: "true",
           [ZED_HEADERS.clientSupportsStreamEnded]: "true",
         },
@@ -599,6 +609,7 @@ export class ZedHostedExecutor extends BaseExecutor {
 export default ZedHostedExecutor;
 
 export const __test__ = {
+  buildProviderRequest,
   adaptGeminiRequestForZed,
   adaptResponsesRequestForZed,
   normalizeZedProvider,

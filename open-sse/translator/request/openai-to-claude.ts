@@ -8,6 +8,7 @@ import { safeParseJSON } from "../helpers/jsonUtil.ts";
 import {
   applyKimiCodingThinking,
   createDefaultClaudeCacheControl,
+  lastUserTextBreakpointIndex,
 } from "../helpers/claudeHelper.ts";
 import { DEFAULT_THINKING_CLAUDE_SIGNATURE } from "../../config/defaultThinkingSignature.ts";
 import {
@@ -431,9 +432,13 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
 
     result.messages = enforceToolResultAdjacency(result.messages);
 
-    // Add cache_control to last assistant message
+    // Add cache_control to last assistant message. When a later user turn carries an
+    // explicit breakpoint this marker is redundant prefix-wise and (no ttl => 5m) would
+    // precede a 1h breakpoint, which Anthropic rejects, so skip it.
+    const explicitUserBreakpointIdx = lastUserTextBreakpointIndex(result.messages);
     for (let i = result.messages.length - 1; i >= 0; i--) {
       const message = result.messages[i];
+      if (i < explicitUserBreakpointIdx) break;
       if (
         message.role === "assistant" &&
         Array.isArray(message.content) &&
