@@ -395,6 +395,7 @@ export function lastUserTextBreakpointIndex(
  * which forwards client markers verbatim.
  */
 export function normalizeClaudeCacheControlTtlOrder(body: ClaudeRequestBody): number {
+  // Missing ttl = Anthropic's 5m default, so any later 1h marker must be downgraded.
   let seenFiveMinutes = false;
   let downgraded = 0;
   const visit = (block: unknown) => {

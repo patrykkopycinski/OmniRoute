@@ -368,3 +368,61 @@ describe("zed-hosted anthropic path (M3)", () => {
     assert.ok(breakpointSequence(request).some((b) => b.where === "user"));
   });
 });
+
+// ---- review round 3 ----------------------------------------------------------
+
+describe("Claude-source bodies are forwarded verbatim (L1)", () => {
+  test("Claude -> Claude keeps a client 1h marker that follows an un-ttl'd one", () => {
+    const body = {
+      model: MODEL,
+      system: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "ctx", cache_control: { type: "ephemeral", ttl: "1h" } }],
+        },
+      ],
+    };
+    const result = translateRequest(
+      FORMATS.CLAUDE,
+      FORMATS.CLAUDE,
+      MODEL,
+      JSON.parse(JSON.stringify(body)),
+      true,
+      null,
+      "claude",
+      null,
+      {}
+    ) as Claude;
+    assert.deepEqual(result.system, body.system);
+    assert.deepEqual(result.messages, body.messages);
+  });
+});
+
+describe("missing ttl is treated as 5m by the ordering pass (L2)", () => {
+  test("chat turn 1 cache_control without ttl, turn 2 breakpoint marker -> turn 2 is 5m", () => {
+    const result = toClaude(
+      {
+        model: MODEL,
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "user",
+            content: [{ type: "text", text: "ctx 1", cache_control: { type: "ephemeral" } }],
+          },
+          { role: "assistant", content: "a1" },
+          { role: "user", content: [markedPart("ctx 2")] },
+        ],
+      },
+      "claude",
+      false
+    );
+    const users = result.messages.filter((m) => m.role === "user");
+    assert.deepEqual((users[0].content as Block[])[0].cache_control, { type: "ephemeral" });
+    assert.deepEqual((users[1].content as Block[])[0].cache_control, {
+      type: "ephemeral",
+      ttl: "5m",
+    });
+    assertValidBreakpoints(result);
+  });
+});

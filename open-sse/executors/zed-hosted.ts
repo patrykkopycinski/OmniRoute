@@ -538,8 +538,7 @@ export class ZedHostedExecutor extends BaseExecutor {
           Accept: "application/x-ndjson, text/event-stream, */*",
           "User-Agent": `OmniRoute/zed-hosted`,
           "x-zed-version":
-            (this.config as Record<string, unknown>)?.appVersion?.toString() ||
-            getZedClientVersion(),
+            (this.config as Record<string, unknown>)?.appVersion?.toString() || getZedClientVersion(),
           [ZED_HEADERS.clientSupportsStatus]: "true",
           [ZED_HEADERS.clientSupportsStreamEnded]: "true",
         },

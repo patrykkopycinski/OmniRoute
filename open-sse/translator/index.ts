@@ -657,7 +657,9 @@ export function translateRequest(
     const preserveCache = isClaudePassthrough || options?.preserveCacheControl === true;
     result = prepareClaudeRequest(result, provider, preserveCache, model, {
       fallbackToHeuristicWhenNoMarkers: true,
-      keepUserTextBreakpoints: true,
+      // Claude-source bodies carry the client's own markers verbatim; only bodies
+      // translated from another format can gain user-text breakpoints.
+      keepUserTextBreakpoints: !isClaudePassthrough,
     });
   }
 
