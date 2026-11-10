@@ -323,7 +323,14 @@ export function openaiResponsesToOpenAIRequest(
         ? item.content.map((contentValue) => {
             const contentItem = toRecord(contentValue);
             if (contentItem.type === "input_text") {
-              return { type: "text", text: toString(contentItem.text) };
+              const textPart: JsonRecord = { type: "text", text: toString(contentItem.text) };
+              // Explicit prompt-caching marker: carry it across the Chat pivot so the
+              // Claude translator can map it to a cache_control breakpoint. Targets that
+              // do not accept it are cleaned downstream (filterToOpenAIFormat allowlist).
+              if (contentItem.prompt_cache_breakpoint != null) {
+                textPart.prompt_cache_breakpoint = contentItem.prompt_cache_breakpoint;
+              }
+              return textPart;
             }
             if (contentItem.type === "output_text") {
               return { type: "text", text: toString(contentItem.text) };

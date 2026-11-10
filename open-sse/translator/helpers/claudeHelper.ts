@@ -367,6 +367,50 @@ export function enforceCacheControlBlockLimit(
   return toRemove;
 }
 
+function messageHasCacheControl(msg: ClaudeMessage): boolean {
+  return (
+    Array.isArray(msg?.content) &&
+    msg.content.some((block) => block && typeof block === "object" && block.cache_control)
+  );
+}
+
+/**
+ * Anthropic requires 1h-TTL breakpoints to precede 5m ones in request order
+ * (tools, system, messages). Message breakpoints can land after a 5m heuristic
+ * marker (e.g. the second-to-last user turn), so downgrade any 1h marker that
+ * follows an explicit 5m one. A missing ttl counts as 5m except on the native
+ * `claude` route, where the executor later defaults it to 1h.
+ */
+export function normalizeClaudeCacheControlTtlOrder(
+  body: ClaudeRequestBody,
+  provider: string | null
+): number {
+  const missingTtlIsFiveMinutes = provider !== "claude";
+  let seenFiveMinutes = false;
+  let downgraded = 0;
+  const visit = (block: unknown) => {
+    if (!block || typeof block !== "object") return;
+    const cc = (block as { cache_control?: { type?: string; ttl?: string } }).cache_control;
+    if (!cc || typeof cc !== "object") return;
+    if (cc.ttl === "1h") {
+      if (seenFiveMinutes) {
+        cc.ttl = "5m";
+        downgraded++;
+      }
+    } else if (cc.ttl === "5m" || (cc.ttl === undefined && missingTtlIsFiveMinutes)) {
+      seenFiveMinutes = true;
+    }
+  };
+  if (Array.isArray(body?.tools)) body.tools.forEach(visit);
+  if (Array.isArray(body?.system)) body.system.forEach(visit);
+  if (Array.isArray(body?.messages)) {
+    for (const msg of body.messages) {
+      if (Array.isArray(msg?.content)) msg.content.forEach(visit);
+    }
+  }
+  return downgraded;
+}
+
 function markMessageCacheControl(msg: ClaudeMessage, ttl?: string): boolean {
   const content = ensureMessageContentArray(msg);
   if (content.length === 0) return false;
@@ -426,7 +470,11 @@ export function prepareClaudeRequest(
   provider: string | null = null,
   preserveCacheControl = false,
   model: string | null = null,
-  opts: { fallbackToHeuristicWhenNoMarkers?: boolean } = {}
+  opts: {
+    fallbackToHeuristicWhenNoMarkers?: boolean;
+    /** Keep explicit breakpoints on USER text parts even when not in preserve mode. */
+    keepUserTextBreakpoints?: boolean;
+  } = {}
 ): ClaudeRequestBody {
   // 0. Strip Anthropic `output_config` for providers that reject it on their
   // Claude-compatible endpoints (MiniMax). Must run before any downstream
@@ -499,9 +547,18 @@ export function prepareClaudeRequest(
     for (let i = 0; i < len; i++) {
       const msg = body.messages[i];
 
-      // Remove cache_control from content blocks (skip in passthrough mode)
+      // Remove cache_control from content blocks (skip in passthrough mode).
+      // On the translator path (opts.keepUserTextBreakpoints) an explicit breakpoint on
+      // a USER text part (client `cache_control`, or the OpenAI `prompt_cache_breakpoint`
+      // mapped by openai-to-claude) is the client's own choice of cache prefix, so it
+      // survives on caching-capable targets; every other message marker is re-derived.
       if (Array.isArray(msg.content) && !preserveCacheControl) {
+        const keepUserTextMarkers =
+          opts.keepUserTextBreakpoints === true && supportsPromptCaching && msg.role === "user";
         for (const block of msg.content) {
+          if (keepUserTextMarkers && block.type === "text" && block.cache_control !== undefined) {
+            continue;
+          }
           delete block.cache_control;
         }
       }
@@ -601,7 +658,7 @@ export function prepareClaudeRequest(
       }, []);
       const secondToLastUserIndex =
         userMessageIndexes.length >= 2 ? userMessageIndexes[userMessageIndexes.length - 2] : -1;
-      if (secondToLastUserIndex >= 0) {
+      if (secondToLastUserIndex >= 0 && !messageHasCacheControl(filtered[secondToLastUserIndex])) {
         markMessageCacheControl(filtered[secondToLastUserIndex]);
       }
     }
@@ -840,6 +897,7 @@ export function prepareClaudeRequest(
   // exempt them (they were the 400 sources on claude 5.x since 2026-09-29).
   hoistToolResultCacheControl(body);
   if (supportsPromptCaching) {
+    normalizeClaudeCacheControlTtlOrder(body, provider);
     enforceCacheControlBlockLimit(body);
   }
 

@@ -34,6 +34,8 @@ const CLAUDE_TOOL_CHOICE_REQUIRED = "an" + "y";
 export interface FilterToOpenAIFormatOptions {
   /** Keep `cache_control` on content blocks (providers that honor OpenAI-format breakpoints). */
   preserveCacheControl?: boolean;
+  /** Keep OpenAI's explicit prompt-caching `prompt_cache_breakpoint` on content parts (openai/openrouter). */
+  preservePromptCacheBreakpoint?: boolean;
   /** Keep Moonshot's non-standard `video_url` content block. */
   preserveVideoUrl?: boolean;
   /** Keep `reasoning_content` on tool-call assistant turns (reasoning-replay providers). */
@@ -46,6 +48,9 @@ export function filterToOpenAIFormat(body, opts: FilterToOpenAIFormatOptions = {
   // requested upstream, keep the `cache_control` field on each content block
   // instead of destructuring it away. `signature` is always stripped.
   const preserveCacheControl = opts?.preserveCacheControl === true;
+  // `prompt_cache_breakpoint` is OpenAI-only; strict OpenAI-compatible upstreams reject
+  // unknown part fields, so it is dropped unless the routed provider accepts it.
+  const preservePromptCacheBreakpoint = opts?.preservePromptCacheBreakpoint === true;
   // Moonshot's native Chat API extends OpenAI content blocks with `video_url`.
   // Keep that extension opt-in so generic OpenAI-compatible providers still
   // receive only the standard allowlist below.
@@ -131,9 +136,12 @@ export function filterToOpenAIFormat(body, opts: FilterToOpenAIFormatOptions = {
         ) {
           // Strip `signature` always; strip `cache_control` unless the provider
           // honors OpenAI-format cache breakpoints and preservation was requested (#2069).
-          const { signature, cache_control, ...rest } = block;
-          const cleanBlock =
+          const { signature, cache_control, prompt_cache_breakpoint, ...rest } = block;
+          let cleanBlock: Record<string, unknown> =
             preserveCacheControl && cache_control !== undefined ? { ...rest, cache_control } : rest;
+          if (preservePromptCacheBreakpoint && prompt_cache_breakpoint !== undefined) {
+            cleanBlock = { ...cleanBlock, prompt_cache_breakpoint };
+          }
           if (
             cleanBlock.type === "text" &&
             typeof cleanBlock.text === "string" &&

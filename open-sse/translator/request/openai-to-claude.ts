@@ -383,7 +383,8 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
         toolNameMap,
         disableToolPrefix,
         thinkingEnabledForRequest,
-        isKimiCoding
+        isKimiCoding,
+        routedProvider
       );
       const hasToolUse = blocks.some((b) => b.type === "tool_use");
       const hasToolResult = blocks.some((b) => b.type === "tool_result");
@@ -591,13 +592,34 @@ export function openaiToClaudeRequest(model, body, stream, credentials = null) {
   return result;
 }
 
+/**
+ * Breakpoint for a user text part: the client's explicit `cache_control` wins;
+ * otherwise OpenAI's explicit prompt-caching marker (`prompt_cache_breakpoint`,
+ * any mode) maps to the same cache_control the system breakpoint gets on this
+ * route, which keeps the 1h-before-5m TTL ordering valid.
+ */
+function userTextPartCacheControl(
+  part: { cache_control?: unknown; prompt_cache_breakpoint?: unknown },
+  routedProvider: string | null | undefined
+): { type: string; ttl?: string } | undefined {
+  const explicit = part.cache_control;
+  if (explicit && typeof explicit === "object" && !Array.isArray(explicit)) {
+    return explicit as { type: string; ttl?: string };
+  }
+  if (part.prompt_cache_breakpoint != null) {
+    return createDefaultClaudeCacheControl(routedProvider);
+  }
+  return undefined;
+}
+
 // Get content blocks from single message
 function getContentBlocksFromMessage(
   msg,
   toolNameMap = new Map(),
   disableToolPrefix = false,
   thinkingEnabledForRequest = false,
-  isKimiCoding = false
+  isKimiCoding = false,
+  routedProvider: string | null | undefined = null
 ) {
   const blocks = [];
 
@@ -629,7 +651,12 @@ function getContentBlocksFromMessage(
     } else if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
         if (part.type === "text" && part.text) {
-          blocks.push({ type: "text", text: part.text });
+          const textCacheControl = userTextPartCacheControl(part, routedProvider);
+          blocks.push({
+            type: "text",
+            text: part.text,
+            ...(textCacheControl !== undefined && { cache_control: textCacheControl }),
+          });
         } else if (part.type === "tool_result") {
           // Skip tool_result with no tool_use_id (would be useless and may cause errors)
           if (!part.tool_use_id) continue;
