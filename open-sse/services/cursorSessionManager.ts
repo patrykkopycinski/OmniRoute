@@ -119,7 +119,12 @@ export type CursorSession = {
   reportedUsage?: CursorReportedUsage;
 };
 
-export type CursorReportedUsage = { prompt: number; completion: number; cached: number };
+export type CursorReportedUsage = {
+  prompt: number;
+  completion: number;
+  cached: number;
+  lastPrompt?: number;
+};
 
 export class CursorSessionManager {
   private sessions = new Map<string, CursorSession>();

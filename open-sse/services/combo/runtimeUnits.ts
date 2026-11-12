@@ -12,7 +12,12 @@ import { waitForCooldownAwareRetry } from "../../../src/sse/services/cooldownAwa
 import { buildContextBudgetResponse, readBudgetFailure } from "./budgetExhaustion.ts";
 import type { ComboDiagnostics } from "../../utils/error.ts";
 import { recordComboRequest } from "../comboMetrics.ts";
-import { resolveDelayMs, requestScopedReplayKey } from "./comboPredicates.ts";
+import {
+  resolveDelayMs,
+  requestScopedReplayKey,
+  isLocalProcessPressureResponse,
+} from "./comboPredicates.ts";
+import { readAttemptFailure } from "./attemptFailure.ts";
 import {
   isProviderSafetyStreamFailure,
   qualityValidationFailure,
@@ -212,6 +217,10 @@ function orderUnitsForStrategy(strategy: string, units: ResolvedComboUnit[]): Re
   return units;
 }
 
+/**
+ * Runs strategy-ordered model and nested-combo units within the shared attempt budget.
+ * Returns the serving or terminal unit and response, or a final failure with no unit.
+ */
 export async function executeRuntimeUnitCombo(args: {
   body: Record<string, unknown>;
   combo: ComboLike;
@@ -376,6 +385,13 @@ export async function executeRuntimeUnitCombo(args: {
           strategy: effectiveStrategy,
           target: { executionKey: unit.executionKey, stepId: unit.stepId, label: unit.label },
         });
+        return { response, unit };
+      }
+      if (
+        response.status === 503 &&
+        isLocalProcessPressureResponse(response, (await readAttemptFailure(response)).errorBody)
+      ) {
+        // Do not replay a shed child or replace its response with an aggregate.
         return { response, unit };
       }
       // feat/combo-step-params: response-side guards BEFORE quality

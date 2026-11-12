@@ -121,6 +121,9 @@ describe("session-dedup: Anthropic tool_result blocks", () => {
         toolResult("t1", FILE),
         toolUse("t2"),
         toolResult("t2", FILE),
+        // A new real user turn: only messages before it are dedup-eligible (fork
+        // current-turn rule, #14978 port), so the re-read below stays intact.
+        { role: "user", content: "again" },
         toolUse("t3"),
         toolResult("t3", FILE),
       ],
@@ -131,9 +134,13 @@ describe("session-dedup: Anthropic tool_result blocks", () => {
 
     // First occurrence stays intact; the later duplicate becomes a reference.
     assert.equal(resultBlocks(messages[2])[0].content, FILE);
-    assert.match(String(resultBlocks(messages[4])[0].content), /^\[dedup:ref sha=[0-9a-f]+\]$/);
+    // Fork guard: a user-role slot is never collapsed to a bare marker, so the
+    // duplicate keeps its first line and the rest becomes the reference.
+    const dup = String(resultBlocks(messages[4])[0].content);
+    assert.match(dup, /\[dedup:ref sha=[0-9a-f]+\]$/);
+    assert.ok(dup.length < FILE.length / 10, "duplicate shrinks to a reference");
     // Current turn (after the last assistant message) is never rewritten.
-    assert.equal(resultBlocks(messages[6])[0].content, FILE);
+    assert.equal(resultBlocks(messages[7])[0].content, FILE);
   });
 });
 

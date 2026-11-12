@@ -186,7 +186,7 @@ test("forced tool_choice (any/tool) is dropped for adaptive-only models, auto fo
     "claude-opus-4-6",
     mk({ type: "function", function: { name: "f" } })
   );
-  assert.deepEqual(legacyOut.tool_choice, { type: "tool", name: "f" }, "legacy keeps forced");
+  assert.deepEqual(legacyOut.tool_choice, { type: "tool", name: "proxy_f" }, "legacy keeps forced (prefixed like the declared tools, #19000)");
 });
 
 // ── Bedrock effort mapping ──

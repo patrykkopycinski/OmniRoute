@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   FREE_MODEL_BUDGETS,
   computeFreeModelTotals,
@@ -31,12 +32,21 @@ const formerlyMisclassifiedIds = [
 describe("#17028 SiliconFlow pay-as-you-go model protection", () => {
   it("retains honest release catalog counts and never counts SiliconFlow as statically uncapped", () => {
     const totals = computeFreeModelTotals();
-    // 471 → 484: #16325 added 13 onomeo free-catalog rows (one uncapped pool, not steady-monthly).
-    // 484 → 485: #16315 added the Token Harbor free route to its own uncapped pool.
-    // 485 → 484: #18418 drops NVIDIA's retired openai/gpt-oss-120b endpoint.
-    // 484 → 485: #18579 replaces the stale Token Harbor claude-haiku-5.5:free route with its two
-    // sourced :free routes (deepseek-v4.1-flash, mimo-v2.6-flash).
-    assert.equal(totals.modelCount, 485);
+    // The 484 inherited identities include 13 onomeo rows added by #16325.
+    // Measured 2026-10-28 inventory subtracts five
+    // priced Ollama grants, three retired offers, two AINative grants and ten OpenCode-only offers.
+    // Includes the release base NVIDIA Nemotron 3.5 identity rename.
+    // 464 → 465 on the v3.8.54 base: #16315/#18579 add two sourced Token Harbor :free routes,
+    // and #18418 drops NVIDIA's retired openai/gpt-oss-120b endpoint.
+    // 465 → 466: #18604 adds nvidia gpt-oss-20b (nvidia/openai/gpt-oss-20b, the sole delta).
+    // Pin identities as well as the total so unrelated replacement is visible.
+    const identities = FREE_MODEL_BUDGETS.map((row) => `${row.provider}/${row.modelId}`).sort();
+    assert.equal(new Set(identities).size, 466);
+    assert.equal(
+      createHash("sha256").update(identities.join("\n")).digest("hex"),
+      "86ea0f28e3d6fd0c5245e71fa34a90ee16ca8471563b61a0c1b51387e34f9d74"
+    );
+    assert.equal(totals.modelCount, 466);
     assert.equal(totals.poolCount, 34);
     assert.equal(totals.uncappedProviders.includes("siliconflow"), false);
   });
