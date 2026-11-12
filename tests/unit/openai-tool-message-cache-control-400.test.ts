@@ -17,7 +17,7 @@ import "../../open-sse/translator/bootstrap.ts";
 // so the markers survived and nested into tool_result.content[] on the
 // Claude leg. The openai-compatible path never runs prepareClaudeRequest
 // (targetFormat is "openai", not "claude"), so the existing
-// hoistToolResultCacheControl guard could not intercept them.
+// claudeHelper's body-level hoistToolResultCacheControl guard could not intercept them.
 
 function buildToolBody() {
   return {

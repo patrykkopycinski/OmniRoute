@@ -66,6 +66,8 @@ export type SingleModelTarget =
       modelPinned?: boolean;
       /** Prior combo legs already attempted before this dispatch (#12339). */
       fallbackAttempts?: number;
+      /** Prefer a sibling after a pre-content empty turn; never widens target pins. */
+      emptyTurnConnectionId?: string | null;
     })
   | { modelAbortSignal: AbortSignal; fallbackAttempts?: number };
 
@@ -80,7 +82,10 @@ export type HandleSingleModel = (
  * `false` is the generic availability bucket (credentials, key policy, hidden).
  * `"model_not_in_catalog"` is the live-catalog miss, recorded separately.
  */
-export type ModelAvailabilityResult = boolean | "model_not_in_catalog";
+export type ModelAvailabilityResult =
+  | boolean
+  | "model_not_in_catalog"
+  | { available: false; reason: "connection_cooldown"; retryAfterMs: number };
 
 export type IsModelAvailable = (
   modelStr: string,
@@ -164,7 +169,10 @@ export type HandleComboChatOptions = {
   requestHeaders?: Headers | Record<string, unknown> | null;
 };
 
-export type HandleRoundRobinOptions = HandleComboChatOptions;
+export type HandleRoundRobinOptions = HandleComboChatOptions & {
+  /** The attempt round-robin moved on from; the caller resolves it against the final answer. */
+  heldAttempt?: { heldTruncatedResponse?: Response | null };
+};
 
 export type HistoricalLatencyStatsEntry = {
   totalRequests?: number;

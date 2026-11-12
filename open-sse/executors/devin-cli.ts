@@ -145,6 +145,11 @@ export class DevinCliExecutor extends BaseExecutor {
 
     log?.info?.("DEVIN", `devin acp → model=${model}, bin=${devinBin}`);
 
+    // Enqueueing or closing a cancelled/closed controller throws ERR_INVALID_STATE, and the
+    // child's `close` handler would raise that inside an EventEmitter listener — an uncaught
+    // exception for the whole server. emit/closeController below absorb it.
+    let childProcess: ReturnType<typeof spawn> | null = null;
+
     const sseStream = new ReadableStream<Uint8Array>({
       start(controller) {
         const enc = new TextEncoder();
@@ -178,6 +183,7 @@ export class DevinCliExecutor extends BaseExecutor {
           // On Windows, devin.exe may need shell resolution
           shell: process.platform === "win32",
         });
+        childProcess = child;
 
         let spawnError: Error | null = null;
         let stdinClosed = false;
@@ -488,6 +494,9 @@ export class DevinCliExecutor extends BaseExecutor {
           clientInfo: { name: "omniroute", version: "1.0" },
           capabilities: {},
         });
+      },
+      cancel() {
+        if (childProcess && !childProcess.killed) childProcess.kill("SIGTERM");
       },
     });
 

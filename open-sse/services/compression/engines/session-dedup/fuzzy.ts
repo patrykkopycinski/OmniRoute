@@ -84,7 +84,7 @@ export interface FuzzyPassOptions {
   maxBlocks: number;
   minBlockChars: number;
   principalId?: string;
-  /** Pre-computed current-turn boundary (t_9f3121b3): shared with the exact pass. */
+  /** Pre-computed current-turn boundary: shared with the exact pass. */
   latestUserIdx?: number;
 }
 export interface FuzzyPassResult {
@@ -99,16 +99,15 @@ export interface FuzzyPassResult {
  */
 export function applyFuzzyPass(messages: MessageLike[], opts: FuzzyPassOptions): FuzzyPassResult {
   try {
-    // Current-turn boundary (t_f53bc5fd): never fuzzy-replace the latest user
-    // message or anything after it. Tool-result messages (role:"user" with only
-    // tool_result parts) are current-turn traffic, not a new user turn. The
-    // engine passes the boundary it already computed (t_9f3121b3: no drift).
+    // Current-turn boundary: never fuzzy-replace the latest user message or anything
+    // after it. Tool-result messages (role:"user" with only tool_result parts) are
+    // current-turn traffic, not a new user turn.
     const latestUserIdx = opts.latestUserIdx ?? currentTurnBoundary(messages);
     const blocks: FuzzyBlock[] = [];
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       // Fuzzy dedup replaces whole messages, so user messages are ineligible
-      // (AC2, t_f53bc5fd round 2: the marker would leave an empty user turn).
+      // (the marker would leave an empty user turn).
       if (m.role === "system" || m.role === "user") continue; // MUTATION-TESTED
       if (latestUserIdx !== -1 && i >= latestUserIdx) continue;
       if (typeof m.content === "string" && m.content.length >= opts.minBlockChars) {
@@ -148,8 +147,8 @@ export function runFuzzyPass(
   stepConfig: Record<string, unknown>,
   minBlockChars: number,
   principalId?: string,
-  latestUserIdx?: number,
-  callerCanRetrieve = false
+  callerCanRetrieve = false,
+  boundary?: number
 ): FuzzyPassResult {
   const raw = stepConfig["fuzzy"] as
     boolean | { enabled?: boolean; minJaccard?: number; shingleSize?: number } | undefined;
@@ -166,6 +165,6 @@ export function runFuzzyPass(
     maxBlocks: MAX_FUZZY_BLOCKS,
     minBlockChars,
     principalId,
-    latestUserIdx,
+    latestUserIdx: boundary,
   });
 }

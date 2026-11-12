@@ -6,23 +6,25 @@ import {
   PLUGIN_ID,
   providerIdFor,
   resolveTimeouts,
+  toResolvedOptions,
 } from "../src/options.js";
 
 describe("parsePluginOptions", () => {
-  it("applies the real default path via parsePluginOptions: toolsOnly on, freeOnly/visionOnly off", () => {
+  it("applies the real default path via parsePluginOptions: freeOnly/toolsOnly/visionOnly all off", () => {
     const opts = parsePluginOptions({ baseURL: "https://gw.example.com" });
     assert.equal(opts.providerId, "omniroute");
     assert.equal(opts.timeoutMs, 10000);
     assert.equal(opts.usableOnly, false);
     assert.equal(opts.enrichment, true);
     assert.equal(opts.freeOnly, false);
-    assert.equal(opts.toolsOnly, true);
+    // Owner decision 2026-10-07: the full catalog is the default again; toolsOnly is opt-in.
+    assert.equal(opts.toolsOnly, false);
     assert.equal(opts.visionOnly, false);
     assert.equal(opts.modelCacheTtlMs, undefined);
   });
-  it("toolsOnly: false is an explicit full-catalog opt-out", () => {
-    const opts = parsePluginOptions({ baseURL: "https://gw.example.com", toolsOnly: false });
-    assert.equal(opts.toolsOnly, false);
+  it("toolsOnly: true is an explicit opt-in to tool-calling models only", () => {
+    const opts = parsePluginOptions({ baseURL: "https://gw.example.com", toolsOnly: true });
+    assert.equal(opts.toolsOnly, true);
   });
   it("accepts a positive modelCacheTtlMs (in-memory TTL cache, default 300s)", () => {
     const opts = parsePluginOptions({ baseURL: "https://gw.example.com", modelCacheTtlMs: 60000 });
@@ -283,5 +285,16 @@ describe("providerId is bounded because it reaches a filesystem path", () => {
         ok
       );
     }
+  });
+});
+
+describe("resolved relay defaults", () => {
+  it("relays the two free-signal defaults from parse to resolved options", () => {
+    const parsed = parsePluginOptions({ baseURL: "https://gw.example.com" });
+    assert.deepEqual(parsed.freeSignals, ["declared"]);
+    assert.equal(parsed.freeProviders, undefined);
+    const resolved = toResolvedOptions(parsed);
+    assert.deepEqual(resolved.freeSignals, ["declared"]);
+    assert.equal(resolved.freeProviders, undefined);
   });
 });
