@@ -244,6 +244,11 @@ export async function deduplicate<T>(
     resolve = res;
     reject = rej;
   });
+  // The leader rethrows its own error; joiners await sharedPromise themselves.
+  // Without this no-op handler a failed leader with no joiners leaves a rejected
+  // promise nobody observes, and the process crash guard rethrows the resulting
+  // unhandledRejection (e.g. SEMAPHORE_TIMEOUT), killing the server.
+  sharedPromise.catch(() => {});
   inflight.set(hash, sharedPromise as Promise<unknown>);
 
   const timer = setTimeout(() => {
