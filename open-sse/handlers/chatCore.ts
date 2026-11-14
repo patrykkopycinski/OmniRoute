@@ -3738,12 +3738,23 @@ export async function handleChatCore({
         // FIX 5: tag this as a per-API-key token-limit breach (errorCode
         // TOKEN_LIMIT_EXCEEDED) so the combo loop can distinguish it from an
         // upstream 429 and NOT cool shared accounts / retry it transiently.
-        return createErrorResult(
+        // Carry the window reset so the combo can fold it into the soonest Retry-After.
+        const resetInMs = Math.max(0, Number(tokenBreach.nextResetAt) - Date.now());
+        const breachResult = createErrorResult(
           HTTP_STATUS.RATE_LIMITED,
           `Token limit exceeded for ${scopeLabel}: ${tokenBreach.tokensUsed}/${tokenBreach.limitValue} tokens used in the current window. Please try again later.`,
-          null,
+          resetInMs > 0 ? resetInMs : null,
           "TOKEN_LIMIT_EXCEEDED"
         );
+        if (resetInMs > 0) {
+          const headers = new Headers(breachResult.response.headers);
+          headers.set("Retry-After", String(Math.max(1, Math.ceil(resetInMs / 1000))));
+          breachResult.response = new Response(breachResult.response.body, {
+            status: breachResult.status,
+            headers,
+          });
+        }
+        return breachResult;
       }
     } catch (err) {
       // Fail-open at Tier 2: Tier 1 already enforced the model/global limit pre-dispatch.

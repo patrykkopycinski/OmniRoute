@@ -860,13 +860,19 @@ export function unavailableResponse(
   statusCode: number,
   message: string,
   retryAfter?: string | number | Date | null,
-  retryAfterHuman?: string
+  retryAfterHuman?: string,
+  opts: { code?: string; type?: string } = {}
 ) {
   const retryAfterSec = normalizeRetryAfterSeconds(retryAfter);
   const safeMessage = sanitizeErrorMessage(message) || getDefaultErrorMessage(statusCode);
   const safeRetryAfterHuman = retryAfterHuman ? sanitizeErrorMessage(retryAfterHuman) : "";
   const msg = safeRetryAfterHuman ? `${safeMessage} (${safeRetryAfterHuman})` : safeMessage;
-  return new Response(JSON.stringify({ error: { message: msg } }), {
+  // A typed error (opts.code) also carries the reset in the body so clients that
+  // cannot read headers (SSE relays, SDK wrappers) can back off for the right time.
+  const error = opts.code
+    ? { message: msg, type: opts.type ?? "rate_limit_error", code: opts.code, retry_after: retryAfterSec }
+    : { message: msg };
+  return new Response(JSON.stringify({ error }), {
     status: statusCode,
     headers: {
       "Content-Type": "application/json",

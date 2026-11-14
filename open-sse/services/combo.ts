@@ -1138,6 +1138,18 @@ async function handleComboChatInner({
     let lastError: string | null = null;
     let earliestRetryAfter: ComboRetryAfter | null = null;
     let lastStatus: number | null = null;
+    // Targets skipped pre-dispatch because they sit on a known cooldown (persisted
+    // connection cooldown / model lockout). Their reset must feed earliestRetryAfter,
+    // otherwise an all-cooling-down combo cannot tell the client when to come back.
+    let rateLimitedSkips = 0;
+    const noteSkippedUntil = (untilMs: number): void => {
+      if (!Number.isFinite(untilMs) || untilMs <= Date.now()) return;
+      rateLimitedSkips++;
+      const iso = new Date(untilMs).toISOString();
+      if (!earliestRetryAfter || new Date(iso) < new Date(earliestRetryAfter)) {
+        earliestRetryAfter = iso;
+      }
+    };
     let skippedForCircuitOpen = false;
     let earliestCircuitOpenRetryMs = 0;
     // #11804: the loop-safety timer is armed per setTry iteration but must be
@@ -1338,13 +1350,17 @@ async function handleComboChatInner({
         // burn max_concurrent slots on real upstream calls against a row
         // SQLite already locked until the reset.
         if (target.connectionId && !allowRateLimitedConnection) {
+          let gateConnection: Record<string, unknown> | null | undefined;
           const persistedSkip = await resolvePersistedConnectionCooldownSkipReason(
             target,
-            (id) => readConnectionForCooldownGate(id, false),
+            async (id) => (gateConnection = await readConnectionForCooldownGate(id, false)),
             allowRateLimitedConnection
           );
           if (persistedSkip) {
             log.info("COMBO", persistedSkip);
+            if (hasFutureRateLimitUntil(gateConnection?.rateLimitedUntil)) {
+              noteSkippedUntil(new Date(String(gateConnection?.rateLimitedUntil)).getTime());
+            }
             clearStaleLKGP(combo.name, target.executionKey, combo.id, log, "COMBO");
             if (i > 0) fallbackCount++;
             return null;
@@ -1372,6 +1388,8 @@ async function handleComboChatInner({
         // Pre-check: skip models locked by the resilience system (model-level lockout)
         if (provider && rawModel && isModelLocked(provider, target.connectionId || "", rawModel)) {
           log.info("COMBO", `Skipping ${modelStr} — model locked by resilience (cooldown active)`);
+          const lockInfo = getModelLockoutInfo(provider, target.connectionId || "", rawModel);
+          if (lockInfo) noteSkippedUntil(Date.now() + lockInfo.remainingMs);
           recordComboDecision(traceInvocationId, {
             step: target.executionKey,
             target: modelStr,
@@ -2433,6 +2451,11 @@ async function handleComboChatInner({
             retry < maxRetries &&
             isTransient &&
             !providerExhausted &&
+            !(
+              result.status === 429 &&
+              retryAfter &&
+              computeClosestRetryAfter(retryAfter).waitMs > retryDelayMs
+            ) &&
             (!config.failoverBeforeRetryExplicit || !nextTarget)
           ) {
             if (
@@ -2811,6 +2834,17 @@ async function handleComboChatInner({
       finalizeComboTrace(traceInvocationId, orderedTargets);
       finishComboTrace(traceInvocationId, { status: 503 });
       if (!lastStatus) {
+        if (recordedAttempts === 0 && rateLimitedSkips > 0 && earliestRetryAfter) {
+          const retryHuman = formatRetryAfter(toRetryAfterDisplayValue(earliestRetryAfter));
+          log.warn("COMBO", `All targets on cooldown (${retryHuman})`);
+          return unavailableResponse(
+            429,
+            "All combo targets are rate-limited or cooling down",
+            earliestRetryAfter,
+            retryHuman,
+            { code: "ALL_TARGETS_RATE_LIMITED", type: "rate_limit_error" }
+          );
+        }
         if (recordedAttempts === 0) {
           notifyWebhookEvent("request.failed", {
             combo: combo.name,
@@ -2917,6 +2951,21 @@ async function handleComboChatInner({
       // rate-limit-class final statuses may carry a `(reset after ...)` suffix
       // (see unavailableRetryGate.ts — do not stitch a peer target's window onto
       // a config-class status like 403/422).
+      if (status === 429) {
+        // Every target is rate-limited: end now with a typed error carrying the
+        // soonest reset, so the client backs off instead of re-POSTing in a loop.
+        const retryHuman = earliestRetryAfter
+          ? formatRetryAfter(toRetryAfterDisplayValue(earliestRetryAfter))
+          : undefined;
+        log.warn("COMBO", `All targets rate-limited | ${msg}${retryHuman ? ` (${retryHuman})` : ""}`);
+        return withQuotaExhaustionClassification(
+          unavailableResponse(status, msg, earliestRetryAfter, retryHuman, {
+            code: "ALL_TARGETS_RATE_LIMITED",
+            type: "rate_limit_error",
+          }),
+          observedFailure ? allObservedFailuresQuota : null
+        );
+      }
       if (earliestRetryAfter && isRetryAfterEligibleStatus(status)) {
         const retryHuman = formatRetryAfter(toRetryAfterDisplayValue(earliestRetryAfter));
         log.warn("COMBO", `All models failed | ${msg} (${retryHuman})`);
